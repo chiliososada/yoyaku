@@ -1,0 +1,894 @@
+// ============================================================================
+// booking-saas Prisma Schema
+//
+// 設計方針:
+//  - マルチテナント: ほぼ全テーブルに tenantId。リポジトリ層で必ずスコープ。
+//  - ソフトデリート: 業務エンティティは deletedAt を持つ。
+//  - 時刻の保存はすべて UTC (timestamptz)。表示時のみ Asia/Tokyo へ変換。
+//  - 営業時間/シフトは「店舗ローカルの午前0時からの分」を整数で保持し、
+//    日付ごとに UTC instant へ変換する（DST非対象の日本だが将来の多国対応も考慮）。
+//  - 予約の占有区間は BookingItem 単位で表現し、容量/重複判定はこの粒度で行う。
+//    （1予約が複数時間帯/複数サービスを占有するケースに対応）
+// ============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  directUrl  = env("DIRECT_URL")
+  extensions = [btree_gist]
+}
+
+// ----------------------------------------------------------------------------
+// Enums
+// ----------------------------------------------------------------------------
+
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+  TRIAL
+  CANCELLED
+}
+
+enum ShopStatus {
+  DRAFT
+  PUBLISHED
+  CLOSED
+}
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+}
+
+enum StaffStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum RoleScope {
+  PLATFORM // プラットフォーム管理者
+  TENANT // 商家（テナント）管理者
+  SHOP // 店舗スタッフ/店長
+}
+
+enum BookingStatus {
+  PENDING // 仮予約（決済待ち等）
+  CONFIRMED // 確定
+  COMPLETED // 来店完了
+  CANCELLED // キャンセル
+  NO_SHOW // 無断キャンセル
+}
+
+enum BookingSource {
+  PUBLIC // 顧客自身のオンライン予約
+  ADMIN // 管理画面からの代理登録
+  IMPORT // 外部インポート
+}
+
+enum BookingEventType {
+  CREATED
+  CONFIRMED
+  RESCHEDULED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+  NOTE_ADDED
+  REMINDER_SENT
+}
+
+enum ActorType {
+  CUSTOMER
+  USER // 管理者/スタッフ
+  SYSTEM
+}
+
+enum ScheduleType {
+  RECURRING // 曜日ベースの定常シフト
+  OVERRIDE // 特定日の上書き（休暇/臨時出勤）
+}
+
+enum SpecialDayType {
+  CLOSED // 臨時休業
+  SPECIAL_OPEN // 特別営業（通常休みだが営業）
+  MODIFIED_HOURS // 営業時間変更
+}
+
+enum HolidayType {
+  NATIONAL // 日本の祝日（参照カレンダー）
+  SHOP // 店舗独自の定休
+}
+
+enum CapacityScope {
+  SHOP
+  SERVICE
+  STAFF
+}
+
+enum NotificationChannel {
+  EMAIL
+  SMS
+  LINE
+}
+
+enum NotificationStatus {
+  PENDING
+  PROCESSING
+  SENT
+  FAILED
+  CANCELLED
+}
+
+enum NotificationTemplate {
+  BOOKING_CONFIRMED
+  BOOKING_CANCELLED
+  BOOKING_REMINDER
+  BOOKING_RESCHEDULED
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  TRIALING
+}
+
+// ----------------------------------------------------------------------------
+// プラットフォーム / テナント
+// ----------------------------------------------------------------------------
+
+/// 商家（プラットフォームの契約単位）。1テナントが複数店舗を持つ。
+model Tenant {
+  id        String       @id @default(cuid())
+  slug      String       @unique
+  name      String
+  status    TenantStatus @default(TRIAL)
+  /// 任意のテナント設定（ブランドカラー等）
+  settings  Json         @default("{}")
+  planId    String?
+  /// Stripe 顧客ID。null=未連携
+  stripeCustomerId         String?   @unique
+  /// 現在の Stripe サブスクリプションID
+  stripeSubscriptionId     String?
+  /// Stripe subscription.status の生値（active/trialing/past_due/canceled 等）
+  stripeSubscriptionStatus String?
+  /// 現在の課金期間の終了（次回更新日時）
+  currentPeriodEnd         DateTime? @db.Timestamptz(6)
+  /// 課金免除（既存店・特約店。プラットフォーム管理者が切替）。true なら課金ゲート対象外
+  billingExempt            Boolean   @default(false)
+  /// ローカル無料トライアル終了日時（Stripe 契約前の猶予。null=トライアルなし）
+  trialEndsAt              DateTime? @db.Timestamptz(6)
+  /// 最後に適用した Stripe イベントの発生時刻。遅延再送された古いイベントで状態を巻き戻さないための番兵
+  lastStripeEventAt        DateTime? @db.Timestamptz(6)
+  createdAt DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime     @updatedAt @db.Timestamptz(6)
+  deletedAt DateTime?    @db.Timestamptz(6)
+
+  plan          Plan?          @relation(fields: [planId], references: [id])
+  shops         Shop[]
+  users         User[]
+  roles         Role[]
+  staff         Staff[]
+  services      Service[]
+  customers     Customer[]
+  bookings      Booking[]
+  subscriptions Subscription[]
+  auditLogs     AuditLog[]
+
+  @@index([status])
+  @@map("tenants")
+}
+
+/// 料金プラン（套餐）。プラットフォーム管理者が定義。
+model Plan {
+  id                  String   @id @default(cuid())
+  code                String   @unique
+  name                String
+  description         String?
+  priceJpy            Int      @default(0)
+  maxShops            Int      @default(1)
+  maxStaffPerShop     Int      @default(10)
+  maxBookingsPerMonth Int      @default(1000)
+  features            Json     @default("{}")
+  /// Stripe Price ID（月額サブスク）。設定されたプランのみオンライン申込可能
+  stripePriceId       String?
+  isActive            Boolean  @default(true)
+  sortOrder           Int      @default(0)
+  createdAt           DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt           DateTime @updatedAt @db.Timestamptz(6)
+
+  tenants       Tenant[]
+  subscriptions Subscription[]
+
+  @@map("plans")
+}
+
+/// テナントのプラン契約履歴。
+model Subscription {
+  id          String             @id @default(cuid())
+  tenantId    String
+  planId      String
+  status      SubscriptionStatus @default(TRIALING)
+  startedAt   DateTime           @default(now()) @db.Timestamptz(6)
+  expiresAt   DateTime?          @db.Timestamptz(6)
+  /// Stripe サブスクリプションID（同期の upsert キー）
+  externalRef String?            @unique
+  createdAt   DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime           @updatedAt @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  plan   Plan   @relation(fields: [planId], references: [id])
+
+  @@index([tenantId])
+  @@map("subscriptions")
+}
+
+/// プラットフォーム全体設定（KV）。
+model SystemConfig {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  value       Json
+  description String?
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+
+  @@map("system_configs")
+}
+
+// ----------------------------------------------------------------------------
+// RBAC: ユーザー / ロール / 権限
+// ----------------------------------------------------------------------------
+
+/// 認証主体（プラットフォーム管理者・テナント管理者・店舗スタッフ）。
+model User {
+  id              String     @id @default(cuid())
+  /// プラットフォーム管理者は null。それ以外はテナントに属する。
+  tenantId        String?
+  email           String     @unique
+  passwordHash    String?
+  name            String
+  status          UserStatus @default(ACTIVE)
+  isPlatformAdmin Boolean    @default(false)
+  lastLoginAt     DateTime?  @db.Timestamptz(6)
+  /// 連続ログイン失敗回数（成功でリセット）。閾値超過で lockedUntil を設定
+  failedLoginCount  Int       @default(0)
+  /// アカウントロック解除時刻（null=未ロック）。時刻経過で自動解除
+  lockedUntil       DateTime? @db.Timestamptz(6)
+  /// ログイン用ワンタイムコード（sha256）。二段階認証（メールOTP）
+  loginOtpHash      String?
+  loginOtpExpiresAt DateTime? @db.Timestamptz(6)
+  loginOtpAttempts  Int       @default(0)
+  /// 二段階認証の免除（デモアカウント等、実メールボックスを持たない検証用のみ）
+  twoFactorExempt   Boolean   @default(false)
+  createdAt       DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime   @updatedAt @db.Timestamptz(6)
+  deletedAt       DateTime?  @db.Timestamptz(6)
+
+  tenant      Tenant?      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  memberships Membership[]
+  staff       Staff[]
+  auditLogs   AuditLog[]
+  passwordResetTokens PasswordResetToken[]
+
+  @@index([tenantId])
+  @@map("users")
+}
+
+/// パスワード再設定トークン。生値ではなくハッシュを保存する。expiresAt 超過 / usedAt 済みは無効。
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime  @db.Timestamptz(6)
+  usedAt    DateTime? @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+/// ロール。scope によって適用範囲が決まる。isSystem=true は組込ロール。
+model Role {
+  id        String    @id @default(cuid())
+  /// システム共通ロールは null。テナント独自ロールは tenantId を持つ。
+  tenantId  String?
+  code      String
+  name      String
+  scope     RoleScope
+  isSystem  Boolean   @default(false)
+  createdAt DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @db.Timestamptz(6)
+
+  tenant          Tenant?          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  rolePermissions RolePermission[]
+  memberships     Membership[]
+
+  @@unique([tenantId, code])
+  @@index([scope])
+  @@map("roles")
+}
+
+/// 権限定義（例: "booking:create", "shop:update"）。
+model Permission {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  name        String
+  category    String
+  description String?
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+/// ユーザーへのロール割当。shopId を指定すると店舗スコープ、null ならテナント全体。
+model Membership {
+  id        String   @id @default(cuid())
+  userId    String
+  roleId    String
+  /// null = テナント全体 / 値あり = 特定店舗
+  shopId    String?
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  user User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role  @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  shop Shop? @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId, shopId])
+  @@index([userId])
+  @@index([shopId])
+  @@map("memberships")
+}
+
+// ----------------------------------------------------------------------------
+// 店舗 / スタッフ / サービス
+// ----------------------------------------------------------------------------
+
+/// 店舗。公開予約ページの単位。
+model Shop {
+  id                      String     @id @default(cuid())
+  tenantId                String
+  slug                    String
+  name                    String
+  description             String?
+  phone                   String?
+  email                   String?
+  postalCode              String?
+  prefecture              String?
+  city                    String?
+  address                 String?
+  /// 表示用タイムゾーン。保存はUTC、表示時にこのTZへ。
+  timezone                String     @default("Asia/Tokyo")
+  status                  ShopStatus @default(DRAFT)
+  publicBookingEnabled    Boolean    @default(false)
+  closeOnNationalHolidays Boolean    @default(true)
+  /// 予約設定のデフォルト（容量ルール未設定時のフォールバック等）
+  settings                Json       @default("{}")
+  createdAt               DateTime   @default(now()) @db.Timestamptz(6)
+  updatedAt               DateTime   @updatedAt @db.Timestamptz(6)
+  deletedAt               DateTime?  @db.Timestamptz(6)
+
+  tenant              Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  staff               Staff[]
+  services            Service[]
+  businessHours       BusinessHours[]
+  staffSchedules      StaffSchedule[]
+  holidays            Holiday[]
+  specialBusinessDays SpecialBusinessDay[]
+  capacityRules       BookingCapacityRule[]
+  bookings            Booking[]
+  bookingItems        BookingItem[]
+  customers           Customer[]
+  memberships         Membership[]
+  notificationRecipients NotificationRecipient[]
+
+  @@unique([tenantId, slug])
+  @@index([tenantId, status])
+  @@map("shops")
+}
+
+/// スタッフ（施術者/担当者）。ログインユーザーと紐付け可能。
+model Staff {
+  id               String      @id @default(cuid())
+  tenantId         String
+  shopId           String
+  userId           String?
+  name             String
+  displayName      String?
+  email            String?
+  phone            String?
+  bio              String?
+  avatarUrl        String?
+  /// 顧客が指名予約で選択可能か
+  isBookable       Boolean     @default(true)
+  /// 同時に担当できる予約数（通常1）
+  capacity         Int         @default(1)
+  /// 指名料（円）。顧客がこのスタッフを指名した場合に加算
+  nominationFeeJpy Int         @default(0)
+  sortOrder        Int         @default(0)
+  status           StaffStatus @default(ACTIVE)
+  createdAt        DateTime    @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime    @updatedAt @db.Timestamptz(6)
+  deletedAt        DateTime?   @db.Timestamptz(6)
+
+  tenant        Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  shop          Shop                  @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  user          User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
+  serviceStaff  ServiceStaff[]
+  schedules     StaffSchedule[]
+  bookings      Booking[]
+  bookingItems  BookingItem[]
+  capacityRules BookingCapacityRule[]
+
+  @@index([tenantId, shopId])
+  @@index([shopId, status])
+  @@map("staff")
+}
+
+/// サービス（メニュー）。durationMin が占有時間、buffer は前後の予備時間。
+model Service {
+  id              String    @id @default(cuid())
+  tenantId        String
+  shopId          String
+  name            String
+  description     String?
+  category        String?
+  /// 施術時間（分）。segments 指定時は表示用の目安。
+  durationMin     Int
+  /// 多時間帯占有 [{offsetMin,durationMin}...]。null=単一区間(durationMin)。例: 塗布30→放置20→洗い20 = [{0,30},{50,20}]
+  segments        Json?
+  /// 前後バッファ（分）。例: 施術後10分の片付け
+  bufferBeforeMin Int       @default(0)
+  bufferAfterMin  Int       @default(0)
+  priceJpy        Int       @default(0)
+  /// セール価格（円）。設定時は予約時の請求額がこの価格になり、予約ページで通常価格に取り消し線を表示。null=セールなし
+  salePriceJpy    Int?
+  /// このサービスの同一時間帯あたり同時受付可能数
+  capacity        Int       @default(1)
+  /// 担当スタッフが必須か
+  requiresStaff   Boolean   @default(true)
+  /// 予約開始時刻の刻み（分）。例: 15分刻み
+  slotIntervalMin Int       @default(15)
+  color           String?
+  isActive        Boolean   @default(true)
+  sortOrder       Int       @default(0)
+  createdAt       DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+  deletedAt       DateTime? @db.Timestamptz(6)
+
+  tenant        Tenant                @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  shop          Shop                  @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  serviceStaff  ServiceStaff[]
+  options       ServiceOption[]
+  bookings      Booking[]
+  bookingItems  BookingItem[]
+  capacityRules BookingCapacityRule[]
+
+  @@index([tenantId, shopId])
+  @@index([shopId, isActive])
+  @@map("services")
+}
+
+/// サービスの追加オプション（例: トリートメント追加 +¥1,500/+15分）。
+model ServiceOption {
+  id               String    @id @default(cuid())
+  tenantId         String
+  serviceId        String
+  name             String
+  priceJpy         Int       @default(0)
+  /// 施術時間の延長（分）。サービス最終セグメントに加算される
+  extraDurationMin Int       @default(0)
+  isActive         Boolean   @default(true)
+  sortOrder        Int       @default(0)
+  createdAt        DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime  @updatedAt @db.Timestamptz(6)
+  deletedAt        DateTime? @db.Timestamptz(6)
+
+  service            Service             @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  bookingItemOptions BookingItemOption[]
+
+  @@index([serviceId, isActive])
+  @@map("service_options")
+}
+
+/// サービスと担当可能スタッフの多対多。
+model ServiceStaff {
+  serviceId String
+  staffId   String
+
+  service Service @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  staff   Staff   @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@id([serviceId, staffId])
+  @@index([staffId])
+  @@map("service_staff")
+}
+
+// ----------------------------------------------------------------------------
+// 営業時間 / シフト / 休業 / 特別営業 / 容量ルール
+// ----------------------------------------------------------------------------
+
+/// 定常の曜日別営業時間。1日に複数区間（昼休み分割等）を許容するため複数行を持てる。
+/// openMinute/closeMinute は店舗ローカルの 0:00 からの分（0–1440）。
+model BusinessHours {
+  id          String   @id @default(cuid())
+  tenantId    String
+  shopId      String
+  /// 0=日曜 ... 6=土曜
+  dayOfWeek   Int
+  openMinute  Int
+  closeMinute Int
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId, dayOfWeek])
+  @@map("business_hours")
+}
+
+/// スタッフのシフト。RECURRING(曜日) と OVERRIDE(特定日) の2種。
+/// isWorking=false は休み（OVERRIDE で当日欠勤を表現）。
+model StaffSchedule {
+  id          String       @id @default(cuid())
+  tenantId    String
+  shopId      String
+  staffId     String
+  type        ScheduleType
+  /// RECURRING のとき必須
+  dayOfWeek   Int?
+  /// OVERRIDE のとき必須（店舗ローカルの暦日）
+  date        DateTime?    @db.Date
+  startMinute Int?
+  endMinute   Int?
+  isWorking   Boolean      @default(true)
+  note        String?
+  createdAt   DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime     @updatedAt @db.Timestamptz(6)
+
+  shop  Shop  @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  staff Staff @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@index([staffId, type])
+  @@index([staffId, date])
+  @@map("staff_schedules")
+}
+
+/// 祝日カレンダー。NATIONAL は参照用（tenantId/shopId=null）。
+model Holiday {
+  id        String      @id @default(cuid())
+  tenantId  String?
+  shopId    String?
+  date      DateTime    @db.Date
+  name      String
+  type      HolidayType @default(NATIONAL)
+  /// 国: 日本固定だが将来拡張
+  country   String      @default("JP")
+  createdAt DateTime    @default(now()) @db.Timestamptz(6)
+
+  shop Shop? @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([country, date, type, shopId])
+  @@index([date])
+  @@index([shopId, date])
+  @@map("holidays")
+}
+
+/// 特定日の営業上書き: 臨時休業 / 特別営業 / 営業時間変更。
+model SpecialBusinessDay {
+  id          String         @id @default(cuid())
+  tenantId    String
+  shopId      String
+  date        DateTime       @db.Date
+  type        SpecialDayType
+  /// SPECIAL_OPEN / MODIFIED_HOURS のとき使用（店舗ローカル分）
+  openMinute  Int?
+  closeMinute Int?
+  reason      String?
+  createdAt   DateTime       @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime       @updatedAt @db.Timestamptz(6)
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, date])
+  @@index([shopId, date])
+  @@map("special_business_days")
+}
+
+/// 予約容量・予約可能条件ルール。scope で SHOP/SERVICE/STAFF を切替。
+/// 同一時間帯の同時予約上限、予約受付窓、リードタイム、キャンセル期限を定義。
+model BookingCapacityRule {
+  id                        String        @id @default(cuid())
+  tenantId                  String
+  shopId                    String
+  scope                     CapacityScope
+  serviceId                 String?
+  staffId                   String?
+  /// 同一時間帯の同時予約上限
+  maxConcurrent             Int           @default(1)
+  /// 予約開始時刻の刻み（分）
+  slotIntervalMin           Int           @default(15)
+  /// 何日先まで予約可能か（提前预约限制）
+  bookingWindowDays         Int           @default(30)
+  /// 開始の何時間前まで予約可能か（最晚预约限制）
+  leadTimeMinHours          Int           @default(2)
+  /// 開始の何時間前までキャンセル可能か（取消期限）
+  cancellationDeadlineHours Int           @default(24)
+  minPartySize              Int           @default(1)
+  maxPartySize              Int           @default(1)
+  isActive                  Boolean       @default(true)
+  createdAt                 DateTime      @default(now()) @db.Timestamptz(6)
+  updatedAt                 DateTime      @updatedAt @db.Timestamptz(6)
+
+  shop    Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  service Service? @relation(fields: [serviceId], references: [id], onDelete: Cascade)
+  staff   Staff?   @relation(fields: [staffId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, scope, serviceId, staffId])
+  @@index([shopId, scope])
+  @@map("booking_capacity_rules")
+}
+
+// ----------------------------------------------------------------------------
+// 顧客 / 予約 / 予約明細 / イベント
+// ----------------------------------------------------------------------------
+
+/// 顧客（テナント配下のエンドユーザー）。ログインユーザーとは別概念。
+model Customer {
+  id             String    @id @default(cuid())
+  tenantId       String
+  shopId         String?
+  name           String
+  nameKana       String?
+  email          String?
+  phone          String?
+  /// 将来の LINE 連携用
+  lineUserId     String?
+  note           String?
+  marketingOptIn Boolean   @default(false)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime  @updatedAt @db.Timestamptz(6)
+  deletedAt      DateTime? @db.Timestamptz(6)
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  shop     Shop?     @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  bookings Booking[]
+
+  @@index([tenantId, email])
+  @@index([tenantId, phone])
+  @@map("customers")
+}
+
+/// 予約ヘッダ。占有区間の実体は BookingItem。
+model Booking {
+  id                String        @id @default(cuid())
+  tenantId          String
+  shopId            String
+  customerId        String
+  /// 代表サービス（複数明細でも一覧表示用に保持）
+  serviceId         String
+  /// 指名スタッフ（任意。null=おまかせ）
+  staffId           String?
+  status            BookingStatus @default(CONFIRMED)
+  source            BookingSource @default(PUBLIC)
+  /// 予約全体の占有開始/終了（UTC）。明細の min(start)〜max(end)。
+  startAt           DateTime      @db.Timestamptz(6)
+  endAt             DateTime      @db.Timestamptz(6)
+  partySize         Int           @default(1)
+  totalPriceJpy     Int           @default(0)
+  /// 指名料（円）。顧客がスタッフを指名した場合のみ > 0。totalPriceJpy に含まれる内訳
+  nominationFeeJpy  Int           @default(0)
+  /// 顧客情報のスナップショット（顧客レコード変更の影響を受けない）
+  customerName      String
+  customerEmail     String?
+  customerPhone     String?
+  /// LINE 経由の予約時の顧客 LINE userId（確認/リマインドを LINE で送るため）。null=非LINE予約
+  customerLineUserId String?
+  note              String?
+  /// 公開キャンセルリンク用トークン
+  cancellationToken String        @unique @default(cuid())
+  /// 二重送信防止（同一キーは1予約のみ）
+  idempotencyKey    String?       @unique
+  confirmedAt       DateTime?     @db.Timestamptz(6)
+  cancelledAt       DateTime?     @db.Timestamptz(6)
+  cancelReason      String?
+  createdByUserId   String?
+  createdAt         DateTime      @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime      @updatedAt @db.Timestamptz(6)
+  deletedAt         DateTime?     @db.Timestamptz(6)
+
+  tenant        Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  shop          Shop              @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  customer      Customer          @relation(fields: [customerId], references: [id])
+  service       Service           @relation(fields: [serviceId], references: [id])
+  staff         Staff?            @relation(fields: [staffId], references: [id], onDelete: SetNull)
+  items         BookingItem[]
+  events        BookingEvent[]
+  notifications NotificationJob[]
+
+  @@index([tenantId, shopId, startAt])
+  @@index([shopId, status, startAt])
+  @@index([customerId])
+  @@index([staffId, startAt])
+  @@map("bookings")
+}
+
+/// 予約明細 = 1つの占有区間。容量/重複判定はこの粒度で行う。
+/// active は重複排他制約の対象判定に使う（キャンセルで false）。
+model BookingItem {
+  id             String   @id @default(cuid())
+  tenantId       String
+  shopId         String
+  bookingId      String
+  serviceId      String
+  staffId        String?
+  /// 占有開始/終了（UTC）。endAt は施術終了 + bufferAfter を含む占有終端。
+  startAt        DateTime @db.Timestamptz(6)
+  endAt          DateTime @db.Timestamptz(6)
+  /// 施術自体の終了（buffer 除く）。表示用。
+  serviceEndAt   DateTime @db.Timestamptz(6)
+  bufferAfterMin Int      @default(0)
+  priceJpy       Int      @default(0)
+  /// 排他制約/容量集計の対象か（CONFIRMED/PENDING/COMPLETED=true, CANCELLED/NO_SHOW=false）
+  active         Boolean  @default(true)
+  sortOrder      Int      @default(0)
+  createdAt      DateTime @default(now()) @db.Timestamptz(6)
+
+  booking Booking             @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  shop    Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  service Service             @relation(fields: [serviceId], references: [id])
+  staff   Staff?              @relation(fields: [staffId], references: [id], onDelete: SetNull)
+  options BookingItemOption[]
+
+  // 重複判定の主索引。range は migration で GiST 排他制約も追加。
+  @@index([shopId, startAt, endAt])
+  @@index([staffId, startAt, endAt])
+  @@index([serviceId, startAt, endAt])
+  @@index([bookingId])
+  @@map("booking_items")
+}
+
+/// 予約明細に付いたオプション（価格・名称のスナップショット。後からオプション定義が変わっても不変）。
+model BookingItemOption {
+  id               String  @id @default(cuid())
+  bookingItemId    String
+  /// 元オプション（削除時は null 化、スナップショットは残る）
+  optionId         String?
+  name             String
+  priceJpy         Int     @default(0)
+  extraDurationMin Int     @default(0)
+
+  bookingItem BookingItem    @relation(fields: [bookingItemId], references: [id], onDelete: Cascade)
+  option      ServiceOption? @relation(fields: [optionId], references: [id], onDelete: SetNull)
+
+  @@index([bookingItemId])
+  @@map("booking_item_options")
+}
+
+/// 予約の状態遷移イベントログ（操作ログ）。追記専用。
+model BookingEvent {
+  id         String           @id @default(cuid())
+  tenantId   String
+  bookingId  String
+  type       BookingEventType
+  fromStatus BookingStatus?
+  toStatus   BookingStatus?
+  actorType  ActorType
+  actorId    String?
+  payload    Json             @default("{}")
+  createdAt  DateTime         @default(now()) @db.Timestamptz(6)
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+  @@index([tenantId, createdAt])
+  @@map("booking_events")
+}
+
+// ----------------------------------------------------------------------------
+// 監査ログ / 通知ジョブ
+// ----------------------------------------------------------------------------
+
+/// 監査ログ（全管理操作）。追記専用・不可変。tenantId=null はプラットフォーム操作。
+model AuditLog {
+  id           String    @id @default(cuid())
+  tenantId     String?
+  actorUserId  String?
+  actorType    ActorType @default(USER)
+  action       String
+  resourceType String
+  resourceId   String?
+  before       Json?
+  after        Json?
+  ip           String?
+  userAgent    String?
+  createdAt    DateTime  @default(now()) @db.Timestamptz(6)
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  actor  User?   @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, createdAt])
+  @@index([actorUserId])
+  @@index([resourceType, resourceId])
+  @@map("audit_logs")
+}
+
+/// 通知ジョブ（メール/SMS/LINE）。BullMQ のアウトボックスとして機能。
+model NotificationJob {
+  id          String               @id @default(cuid())
+  tenantId    String
+  bookingId   String?
+  channel     NotificationChannel
+  template    NotificationTemplate
+  recipient   String
+  payload     Json                 @default("{}")
+  status      NotificationStatus   @default(PENDING)
+  attempts    Int                  @default(0)
+  maxAttempts Int                  @default(5)
+  scheduledAt DateTime             @default(now()) @db.Timestamptz(6)
+  sentAt      DateTime?            @db.Timestamptz(6)
+  lastError   String?
+  createdAt   DateTime             @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime             @updatedAt @db.Timestamptz(6)
+
+  booking Booking? @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([status, scheduledAt])
+  @@index([tenantId])
+  @@map("notification_jobs")
+}
+
+/// 店舗の通知先（店長/オーナー/スタッフ）。1店舗に複数・複数チャネル可。新規予約/変更/キャンセルを通知。
+model NotificationRecipient {
+  id              String              @id @default(cuid())
+  tenantId        String
+  shopId          String
+  channel         NotificationChannel // EMAIL | LINE
+  /// メールアドレス、または LINE userId（U...）
+  address         String
+  /// 表示名（例: 店長 田中）
+  label           String?
+  active          Boolean             @default(true)
+  createdByUserId String?
+  createdAt       DateTime            @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime            @updatedAt @db.Timestamptz(6)
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, channel, address])
+  @@index([shopId, active])
+  @@map("notification_recipients")
+}
+
+/// LINE 連携用の短期コード。店長が LINE 公式アカウントを友だち追加し、このコードを送ると userId が紐付く。
+model LineLinkCode {
+  code            String    @id
+  tenantId        String
+  shopId          String
+  label           String?
+  createdByUserId String?
+  expiresAt       DateTime  @db.Timestamptz(6)
+  consumedAt      DateTime? @db.Timestamptz(6)
+  createdAt       DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([expiresAt])
+  @@map("line_link_codes")
+}

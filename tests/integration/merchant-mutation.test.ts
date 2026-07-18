@@ -1,0 +1,215 @@
+/**
+ * 商家後台の書込サービス統合テスト（実DB）。
+ * スタッフ/サービスCRUD・店舗設定・特別営業日・営業時間・ソフトデリート・テナント隔離を検証。
+ */
+import { describe, it, expect, afterAll, beforeAll } from 'vitest';
+import { prisma } from '@/lib/db';
+import * as svc from '@/server/services/merchant-mutation-service';
+import { getDayAvailability } from '@/server/services/booking-service';
+import { seedScenario, cleanupTenant } from '../helpers/seed';
+
+const createdTenants: string[] = [];
+beforeAll(async () => { await prisma.$queryRaw`SELECT 1`; });
+afterAll(async () => {
+  for (const t of createdTenants) await cleanupTenant(t);
+  await prisma.$disconnect();
+});
+
+const baseStaff = {
+  name: '新人 太郎', displayName: '太郎', email: '', phone: '', bio: '',
+  isBookable: true, capacity: 1, nominationFeeJpy: 0, status: 'ACTIVE' as const, sortOrder: 0,
+  serviceIds: [] as string[],
+};
+const baseService = {
+  name: '新メニュー', category: '', description: '', durationMin: 45, bufferAfterMin: 5,
+  priceJpy: 3000, salePriceJpy: null as number | null, capacity: 1, requiresStaff: true, slotIntervalMin: 15, color: '', isActive: true,
+  sortOrder: 0, staffIds: [] as string[], segments: undefined,
+  options: [] as { id?: string; name: string; priceJpy: number; extraDurationMin: number }[],
+};
+
+describe('スタッフ CRUD', () => {
+  it('作成・担当割当・更新・ソフトデリート', async () => {
+    const sc = await seedScenario({ staffCount: 1 });
+    createdTenants.push(sc.tenantId);
+
+    const created = await svc.createStaff(sc.tenantId, sc.shopId, { ...baseStaff, serviceIds: [sc.serviceId] });
+    expect(created.name).toBe('新人 太郎');
+    const links = await prisma.serviceStaff.count({ where: { staffId: created.id } });
+    expect(links).toBe(1);
+
+    await svc.updateStaff(sc.tenantId, sc.shopId, created.id, { ...baseStaff, name: '改名', serviceIds: [] });
+    const after = await prisma.staff.findUnique({ where: { id: created.id }, select: { name: true } });
+    expect(after?.name).toBe('改名');
+    expect(await prisma.serviceStaff.count({ where: { staffId: created.id } })).toBe(0);
+
+    await svc.softDeleteStaff(sc.tenantId, sc.shopId, created.id);
+    const deleted = await prisma.staff.findUnique({ where: { id: created.id }, select: { deletedAt: true, status: true } });
+    expect(deleted?.deletedAt).not.toBeNull();
+    expect(deleted?.status).toBe('INACTIVE');
+  });
+
+  it('作成時に営業時間から既定シフトが自動生成され、すぐ予約可能になる', async () => {
+    const sc = await seedScenario({ staffCount: 0 }); // スタッフ0の状態から新規作成
+    createdTenants.push(sc.tenantId);
+
+    const created = await svc.createStaff(sc.tenantId, sc.shopId, { ...baseStaff, serviceIds: [sc.serviceId] });
+
+    // 営業時間（全7曜日）と同数の RECURRING シフトが自動生成される
+    const schedules = await prisma.staffSchedule.findMany({
+      where: { staffId: created.id, type: 'RECURRING' },
+      select: { dayOfWeek: true, startMinute: true, endMinute: true, isWorking: true },
+    });
+    expect(schedules).toHaveLength(7);
+    expect(schedules.every((s) => s.isWorking)).toBe(true);
+
+    // 指名でその日の空きスロットが実際に出る（シフト未設定なら全て × になっていた回帰）
+    const day = await getDayAvailability({
+      tenantId: sc.tenantId,
+      shopId: sc.shopId,
+      serviceId: sc.serviceId,
+      staffId: created.id,
+      date: '2026-07-06', // 月曜（営業日）
+      now: new Date('2026-07-05T00:00:00.000Z'), // lead/window を確定させる
+    });
+    expect(day.slots.some((s) => s.available)).toBe(true);
+  });
+
+  it('別テナントのスタッフは更新できない（データ隔離）', async () => {
+    const a = await seedScenario({ staffCount: 1 });
+    const b = await seedScenario({ staffCount: 1 });
+    createdTenants.push(a.tenantId, b.tenantId);
+    const staff = await svc.createStaff(a.tenantId, a.shopId, baseStaff);
+    // テナントBの権限でAのスタッフを更新しようとする → NotFound
+    await expect(svc.updateStaff(b.tenantId, b.shopId, staff.id, baseStaff)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('同一テナント内でも別店舗のリソースは越境更新・削除できない（NOT_FOUND）', async () => {
+    const sc = await seedScenario({ staffCount: 1 }); // 店舗A
+    createdTenants.push(sc.tenantId);
+    // 同一テナントに店舗Bを直接作成（プラン上限を避けてDBに用意）
+    const shopB = await prisma.shop.create({
+      data: { tenantId: sc.tenantId, slug: `shop-b-${Date.now()}`, name: '店舗B', timezone: 'Asia/Tokyo', status: 'PUBLISHED', settings: { shopCapacity: 1 } },
+    });
+    await prisma.bookingCapacityRule.create({
+      data: { tenantId: sc.tenantId, shopId: shopB.id, scope: 'SHOP', maxConcurrent: 1, slotIntervalMin: 15, bookingWindowDays: 30, leadTimeMinHours: 2, cancellationDeadlineHours: 24 },
+    });
+    const staffB = await svc.createStaff(sc.tenantId, shopB.id, baseStaff);
+    const serviceB = await svc.createService(sc.tenantId, shopB.id, { ...baseService, requiresStaff: false, staffIds: [] });
+    const ruleB = await prisma.bookingCapacityRule.findFirst({ where: { shopId: shopB.id, scope: 'SHOP' }, select: { id: true } });
+
+    // 店舗A のスコープ(sc.shopId)で 店舗B のリソースを操作 → すべて NOT_FOUND
+    const capInput = { maxConcurrent: 5, slotIntervalMin: 15, bookingWindowDays: 30, leadTimeMinHours: 2, cancellationDeadlineHours: 24 };
+    await expect(svc.updateStaff(sc.tenantId, sc.shopId, staffB.id, baseStaff)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(svc.softDeleteStaff(sc.tenantId, sc.shopId, staffB.id)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(svc.updateService(sc.tenantId, sc.shopId, serviceB.id, { ...baseService, requiresStaff: false, staffIds: [] })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(svc.updateCapacityRule(sc.tenantId, sc.shopId, ruleB!.id, capInput)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(svc.addStaffOverride(sc.tenantId, sc.shopId, staffB.id, { date: '2026-09-08', isWorking: false })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(svc.setStaffLogin(sc.tenantId, sc.shopId, staffB.id, `x_${Date.now()}@e.test`, 'password123')).rejects.toMatchObject({ code: 'NOT_FOUND' });
+
+    // 正しい店舗スコープ(shopB.id)なら成功
+    const okB = await svc.updateStaff(sc.tenantId, shopB.id, staffB.id, { ...baseStaff, name: 'B更新' });
+    expect(okB.name).toBe('B更新');
+  });
+});
+
+describe('サービス CRUD（segments含む）', () => {
+  it('多時間帯 segments を保存・更新できる', async () => {
+    const sc = await seedScenario({ staffCount: 2 });
+    createdTenants.push(sc.tenantId);
+
+    const created = await svc.createService(sc.tenantId, sc.shopId, {
+      ...baseService,
+      staffIds: sc.staffIds,
+      segments: [{ offsetMin: 0, durationMin: 30 }, { offsetMin: 50, durationMin: 20 }],
+    });
+    const row = await prisma.service.findUnique({ where: { id: created.id }, select: { segments: true } });
+    expect(Array.isArray(row?.segments)).toBe(true);
+    expect((row?.segments as { offsetMin: number }[]).length).toBe(2);
+    expect(await prisma.serviceStaff.count({ where: { serviceId: created.id } })).toBe(2);
+
+    await svc.updateService(sc.tenantId, sc.shopId, created.id, { ...baseService, staffIds: [sc.staffIds[0]!], segments: undefined });
+    expect(await prisma.serviceStaff.count({ where: { serviceId: created.id } })).toBe(1);
+  });
+});
+
+describe('店舗設定 / 特別営業日 / 営業時間', () => {
+  it('店舗設定を更新（shopCapacity は settings に保存）', async () => {
+    const sc = await seedScenario({ staffCount: 1 });
+    createdTenants.push(sc.tenantId);
+    await svc.updateShopSettings(sc.tenantId, sc.shopId, {
+      name: '更新後店舗', description: '', phone: '', email: '', postalCode: '', prefecture: '', city: '', address: '',
+      status: 'PUBLISHED', publicBookingEnabled: true, closeOnNationalHolidays: false, shopCapacity: 7,
+    });
+    const shop = await prisma.shop.findUnique({ where: { id: sc.shopId }, select: { name: true, settings: true, closeOnNationalHolidays: true } });
+    expect(shop?.name).toBe('更新後店舗');
+    expect((shop?.settings as { shopCapacity: number }).shopCapacity).toBe(7);
+    expect(shop?.closeOnNationalHolidays).toBe(false);
+  });
+
+  it('特別営業日の追加(upsert)と削除', async () => {
+    const sc = await seedScenario({ staffCount: 1 });
+    createdTenants.push(sc.tenantId);
+    const added = await svc.addSpecialDay(sc.tenantId, sc.shopId, { date: '2026-12-31', type: 'CLOSED', reason: '年末' });
+    expect(await prisma.specialBusinessDay.count({ where: { shopId: sc.shopId } })).toBe(1);
+    // 同日 upsert
+    await svc.addSpecialDay(sc.tenantId, sc.shopId, { date: '2026-12-31', type: 'SPECIAL_OPEN', openMinute: 600, closeMinute: 900 });
+    expect(await prisma.specialBusinessDay.count({ where: { shopId: sc.shopId } })).toBe(1);
+    await svc.deleteSpecialDay(sc.tenantId, sc.shopId, added.id);
+    expect(await prisma.specialBusinessDay.count({ where: { shopId: sc.shopId } })).toBe(0);
+  });
+
+  it('営業時間を全置換', async () => {
+    const sc = await seedScenario({ staffCount: 1 });
+    createdTenants.push(sc.tenantId);
+    await svc.replaceBusinessHours(sc.tenantId, sc.shopId, {
+      rows: [
+        { dayOfWeek: 1, openMinute: 600, closeMinute: 720 },
+        { dayOfWeek: 1, openMinute: 780, closeMinute: 1140 },
+      ],
+    });
+    const rows = await prisma.businessHours.findMany({ where: { shopId: sc.shopId } });
+    expect(rows.length).toBe(2);
+  });
+
+  it('スタッフシフト: 曜日全置換 + 特定日欠勤で予約不可になる（エンジン連動）', async () => {
+    const sc = await seedScenario({ staffCount: 1, staffCapacity: 1 });
+    createdTenants.push(sc.tenantId);
+    const date = '2026-09-08';
+    const now = new Date('2026-09-03T00:00:00.000Z');
+
+    // 初期は空きあり
+    const before = await getDayAvailability({ tenantId: sc.tenantId, shopId: sc.shopId, serviceId: sc.serviceId, date, now });
+    expect(before.slots.some((s) => s.available)).toBe(true);
+
+    // 当該スタッフを当日欠勤に
+    await svc.addStaffOverride(sc.tenantId, sc.shopId, sc.staffIds[0]!, { date, isWorking: false });
+
+    const after = await getDayAvailability({ tenantId: sc.tenantId, shopId: sc.shopId, serviceId: sc.serviceId, date, now });
+    expect(after.slots.every((s) => !s.available)).toBe(true);
+
+    // 曜日シフトの全置換（月のみ）
+    await svc.replaceStaffRecurringSchedule(sc.tenantId, sc.shopId, sc.staffIds[0]!, {
+      rows: [{ dayOfWeek: 1, startMinute: 600, endMinute: 1140 }],
+    });
+    const recurring = await prisma.staffSchedule.count({ where: { staffId: sc.staffIds[0]!, type: 'RECURRING' } });
+    expect(recurring).toBe(1);
+  });
+
+  it('容量ルールを更新', async () => {
+    const sc = await seedScenario({ staffCount: 1, shopCapacity: 3 });
+    createdTenants.push(sc.tenantId);
+    const rule = await prisma.bookingCapacityRule.findFirst({ where: { shopId: sc.shopId, scope: 'SHOP' }, select: { id: true } });
+    await svc.updateCapacityRule(sc.tenantId, sc.shopId, rule!.id, {
+      maxConcurrent: 9, slotIntervalMin: 30, bookingWindowDays: 14, leadTimeMinHours: 3, cancellationDeadlineHours: 48,
+    });
+    const updated = await prisma.bookingCapacityRule.findUnique({ where: { id: rule!.id }, select: { maxConcurrent: true, bookingWindowDays: true } });
+    expect(updated?.maxConcurrent).toBe(9);
+    expect(updated?.bookingWindowDays).toBe(14);
+    // 別テナントは更新不可
+    const other = await seedScenario({ staffCount: 1 });
+    createdTenants.push(other.tenantId);
+    await expect(svc.updateCapacityRule(other.tenantId, other.shopId, rule!.id, {
+      maxConcurrent: 1, slotIntervalMin: 15, bookingWindowDays: 30, leadTimeMinHours: 2, cancellationDeadlineHours: 24,
+    })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+});

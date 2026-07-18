@@ -1,0 +1,54 @@
+# ============================================================================
+# ローカル開発 / デモ用インフラ
+#   docker compose up -d  で PostgreSQL と Redis を起動
+# ============================================================================
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: booking_saas_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-booking}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-booking_local_pw}
+      POSTGRES_DB: ${POSTGRES_DB:-booking_saas}
+      # タイムゾーンはUTC固定（保存はすべてUTC、表示層でAsia/Tokyoへ変換）
+      TZ: UTC
+      PGTZ: UTC
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-booking} -d ${POSTGRES_DB:-booking_saas}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    command:
+      # btree_gist（排他制約に必要）を確実に使えるよう、拡張は migration で作成。
+      # 接続数・ロック挙動を本番に近づけるための最小チューニング。
+      - 'postgres'
+      - '-c'
+      - 'max_connections=200'
+      - '-c'
+      - 'timezone=UTC'
+
+  redis:
+    image: redis:7-alpine
+    container_name: booking_saas_redis
+    restart: unless-stopped
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
