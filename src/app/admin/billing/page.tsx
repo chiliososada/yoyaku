@@ -64,6 +64,12 @@ export default async function BillingPage({
           <CreditCard className="size-3.5" /> ご契約の変更はオーナー権限のアカウントで行えます。
         </p>
       )}
+      <p className="mt-4 text-center text-[11px] text-muted-foreground">
+        お申し込みにあたっては
+        <a href="/legal/terms" target="_blank" className="mx-1 underline hover:text-foreground">利用規約</a>・
+        <a href="/legal/tokushoho" target="_blank" className="mx-1 underline hover:text-foreground">特定商取引法に基づく表記</a>
+        をご確認ください。
+      </p>
     </div>
   );
 }

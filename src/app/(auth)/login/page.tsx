@@ -40,12 +40,6 @@ export default function LoginPage() {
             </div>
           </CardContent>
         </Card>
-        <div className="mt-4 rounded-xl border bg-white/80 p-3 text-xs text-muted-foreground backdrop-blur">
-          <p className="mb-1 font-medium text-foreground">デモアカウント（password123）</p>
-          <p>プラットフォーム: admin@platform.test</p>
-          <p>商家オーナー: owner@demo.test</p>
-          <p>スタッフ: staff@demo.test</p>
-        </div>
       </div>
     </main>
   );

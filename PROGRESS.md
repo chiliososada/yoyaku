@@ -260,6 +260,14 @@ Stripe 有効化のセキュリティ質問票に**正直に「はい」と答�
 - 後片付け: デモ商家は billingExempt=true に復元（テスト用サブスクは test モードのため実害なし）。
 - **本番切替（審査通過後・約5分）**: Stripe を本番モードに切替 → 本番の商品/価格を作成し Price ID をプランに再登録 → 本番 webhook 送信先を登録 → `.env.production` の `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET` を `sk_live_`/本番 `whsec_` に差替 → app/worker 再作成。※チャットに露出した `sk_test` はロール推奨、`PLATFORM_BASIC_PASS` もスクショ露出のため再生成推奨。
 
+## 📄 商用運営の最終整備（法務・デモ資格情報・バックアップ）— 本番展開済み（2026-07-19）
+- **法務3ページ**: `/legal/tokushoho`（特定商取引法に基づく表記 — 事業者/住所/連絡先/価格/支払/解約/返金条件）・`/legal/terms`（利用規約 11 条: 月額自動更新・不返金・データ帰属・免責上限3ヶ月・東京地裁管轄）・`/legal/privacy`（取得情報/目的/委託先 Stripe・LINE/安全管理/開示窓口）。共有 `legal/layout.tsx`。LP フッター（© マイアークス株式会社 + 3リンク）と `/admin/billing`（申込導線）からリンク。※雛形につき、正式運用拡大時は専門家レビュー推奨。
+- **デモ資格情報の公開撤去**: LP とログインページに掲示していた `owner@demo.test / password123` 等を削除（アカウント自体は地推デモ用に存続・2FA免除・デモテナント隔離）。
+- **日次DBバックアップ**: hpe1 に `~/backup/backup_booking.sh`（pg_dump→gzip・14日保持・ログ付き）+ cron 毎日 4:30 JST。初回実行で 18K ダンプ生成・gunzip -t 完整性 OK を確認。
+- **監査（前回監査以降の差分）**: 認証チェーン（login-security/auth/auth.config/middleware/ログインフォーム）・課金収尾・法務ページを精査。auth.config は成功時のみ jwt 詰替でカスタムエラーと干渉なし ✓。既知の LOW 1件のみ: OTP 初回送信失敗時、8分グレース内の再送がスキップされ最大約2分待ち（許容・記録のみ）。ログインページに残っていたデモ資格情報の公開掲示を発見・撤去（今回の実修正1件）。
+- 検証: 全ゲート緑（tsc/lint/**vitest 200**/build、法務3ページは静的生成）。本番: 3ページ 200 + 会社名表示 ✓、LP フッターにリンク ✓、LP/ログインのデモ資格情報 0 件 ✓、health ✓。
+- Git: `chiliososada/yoyaku`（private）へ初回 push 済み。以降は機能完了ごとにローカル commit（push は運営が実行 or 権限付与で自動化）。
+
 ## ▶ 次の一手 — Iteration 15+: 余白（任意）
 全要件＋拡張＋運用周りを実装済み。残るは純粋に任意:
 1. **simplify**: 各ページ重複 `Row` を共有 UI 化（低優先）。

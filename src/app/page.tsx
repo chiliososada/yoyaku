@@ -99,7 +99,7 @@ export default function HomePage() {
             </Button>
           </div>
           <p className="text-xs text-muted-foreground">
-            デモアカウント: owner@demo.test / admin@platform.test（password123）
+            導入のご相談・デモのご依頼はお気軽にお問い合わせください。
           </p>
         </div>
       </section>
@@ -147,13 +147,16 @@ export default function HomePage() {
       </section>
 
       <footer className="border-t py-8">
-        <div className="container flex flex-col items-center gap-1 text-center text-sm text-muted-foreground">
+        <div className="container flex flex-col items-center gap-3 text-center text-sm text-muted-foreground">
           <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
             <CalendarCheck className="size-4 text-primary" /> 予約システム SaaS
           </span>
-          <span className="text-xs">
-            開発デモ環境 — すべての時刻は UTC で保存され、Asia/Tokyo で表示されます。
-          </span>
+          <nav className="flex flex-wrap items-center justify-center gap-x-5 gap-y-1 text-xs">
+            <Link href="/legal/terms" className="hover:text-foreground hover:underline">利用規約</Link>
+            <Link href="/legal/privacy" className="hover:text-foreground hover:underline">プライバシーポリシー</Link>
+            <Link href="/legal/tokushoho" className="hover:text-foreground hover:underline">特定商取引法に基づく表記</Link>
+          </nav>
+          <span className="text-xs">© {new Date().getFullYear()} マイアークス株式会社</span>
         </div>
       </footer>
     </main>
