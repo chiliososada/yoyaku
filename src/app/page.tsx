@@ -152,7 +152,7 @@ export default function HomePage() {
       <footer className="border-t py-8">
         <div className="container flex flex-col items-center gap-3 text-center text-sm text-muted-foreground">
           <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
-            <CalendarCheck className="size-4 text-primary" /> 予約システム SaaS
+            <CalendarCheck className="size-4 text-primary" /> Yoyaku SaaS
           </span>
           <nav className="flex flex-wrap items-center justify-center gap-x-5 gap-y-1 text-xs">
             <Link href="/guide" className="hover:text-foreground hover:underline">使い方ガイド</Link>

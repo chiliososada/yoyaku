@@ -22,7 +22,7 @@ export default function LoginPage() {
           <div className="flex size-14 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg shadow-primary/30">
             <CalendarCheck className="size-7" />
           </div>
-          <span className="text-lg font-bold tracking-tight">予約システム</span>
+          <span className="text-lg font-bold tracking-tight">Yoyaku</span>
         </div>
         <Card className="border-0 shadow-xl shadow-slate-200/60">
           <CardHeader>

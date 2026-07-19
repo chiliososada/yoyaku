@@ -56,7 +56,7 @@ export async function issueLoginOtp(
     try {
       await sendEmail({
         to: user.email,
-        subject: '【予約システム】ログイン確認コード',
+        subject: '【Yoyaku】ログイン確認コード',
         text: [
           'ログイン確認コード（二段階認証）:',
           '',

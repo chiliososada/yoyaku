@@ -1,13 +1,13 @@
 import type { Metadata } from 'next';
 
-export const metadata: Metadata = { title: 'プライバシーポリシー | 予約システム' };
+export const metadata: Metadata = { title: 'プライバシーポリシー | Yoyaku' };
 
 export default function PrivacyPage() {
   return (
     <>
       <h1>プライバシーポリシー</h1>
       <p>
-        マイアークス株式会社（以下「当社」）は、予約管理システム「予約システム」（https://yoyaku.arcs-ai.com、以下「本サービス」）における個人情報の取扱いについて、以下のとおりプライバシーポリシーを定めます。
+        マイアークス株式会社（以下「当社」）は、予約管理システム「Yoyaku」（https://yoyaku.arcs-ai.com、以下「本サービス」）における個人情報の取扱いについて、以下のとおりプライバシーポリシーを定めます。
       </p>
 
       <h2>1. 取得する情報</h2>

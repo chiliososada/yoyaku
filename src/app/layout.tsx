@@ -12,10 +12,10 @@ const notoSansJp = Noto_Sans_JP({
 
 export const metadata: Metadata = {
   title: {
-    default: '予約システム | オンライン予約管理',
-    template: '%s | 予約システム',
+    default: 'Yoyaku | サロン・美容室の予約管理システム',
+    template: '%s | Yoyaku',
   },
-  description: '店舗・スタッフ・サービスを横断管理できる、商用グレードのマルチテナント予約システム。',
+  description: '店舗・スタッフ・サービスを横断管理できる、商用グレードのマルチテナント予約管理システム「Yoyaku」。',
   robots: { index: false, follow: false },
 };
 

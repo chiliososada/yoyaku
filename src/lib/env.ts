@@ -58,7 +58,7 @@ const schema = z.object({
   SMTP_PORT: z.coerce.number().default(587),
   SMTP_USER: z.string().optional(),
   SMTP_PASSWORD: z.string().optional(),
-  SMTP_FROM: z.string().default('予約システム <noreply@example.com>'),
+  SMTP_FROM: z.string().default('Yoyaku <noreply@example.com>'),
 });
 
 const parsed = schema.safeParse(process.env);

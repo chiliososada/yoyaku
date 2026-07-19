@@ -7,7 +7,7 @@ export default function LegalLayout({ children }: { children: React.ReactNode })
       <header className="border-b bg-white">
         <div className="container flex items-center justify-between py-4">
           <Link href="/" className="inline-flex items-center gap-1.5 font-semibold text-foreground">
-            <CalendarCheck className="size-5 text-primary" /> 予約システム
+            <CalendarCheck className="size-5 text-primary" /> Yoyaku
           </Link>
           <Link href="/" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
             <ChevronLeft className="size-4" /> トップへ戻る

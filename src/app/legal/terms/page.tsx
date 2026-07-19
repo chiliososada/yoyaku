@@ -1,13 +1,13 @@
 import type { Metadata } from 'next';
 
-export const metadata: Metadata = { title: '利用規約 | 予約システム' };
+export const metadata: Metadata = { title: '利用規約 | Yoyaku' };
 
 export default function TermsPage() {
   return (
     <>
       <h1>利用規約</h1>
       <p>
-        本利用規約（以下「本規約」）は、マイアークス株式会社（以下「当社」）が提供する予約管理システム「予約システム」（https://yoyaku.arcs-ai.com、以下「本サービス」）の利用条件を定めるものです。契約者（以下「利用者」）は、本サービスの利用申込みをもって本規約に同意したものとみなします。
+        本利用規約（以下「本規約」）は、マイアークス株式会社（以下「当社」）が提供する予約管理システム「Yoyaku」（https://yoyaku.arcs-ai.com、以下「本サービス」）の利用条件を定めるものです。契約者（以下「利用者」）は、本サービスの利用申込みをもって本規約に同意したものとみなします。
       </p>
 
       <h2>第1条（定義）</h2>
