@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation';
 import {
   BarChart3,
   BellRing,
+  BookOpen,
   Building2,
   CalendarCheck,
   CalendarOff,
@@ -134,8 +135,20 @@ export function AdminShell({ variant, brandLabel, userName, userEmail, permissio
             );
           })}
         </nav>
-        <div className="border-t border-slate-800/80 p-3 text-[11px] text-slate-500">
-          {variant === 'platform' ? 'Platform Console' : 'Merchant Console'}
+        <div className="border-t border-slate-800/80 p-3">
+          {variant === 'merchant' && (
+            <a
+              href="/guide"
+              target="_blank"
+              rel="noreferrer"
+              className="mb-1.5 flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-slate-400 hover:bg-slate-800/70 hover:text-slate-100"
+            >
+              <BookOpen className="size-4 shrink-0" /> 使い方ガイド
+            </a>
+          )}
+          <div className="px-3 text-[11px] text-slate-500">
+            {variant === 'platform' ? 'Platform Console' : 'Merchant Console'}
+          </div>
         </div>
       </aside>
 

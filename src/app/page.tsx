@@ -97,6 +97,9 @@ export default function HomePage() {
             <Button asChild size="lg" variant="outline" className="h-12 bg-white/80 px-7 text-base backdrop-blur">
               <Link href="/admin">管理画面へ</Link>
             </Button>
+            <Button asChild size="lg" variant="ghost" className="h-12 px-6 text-base">
+              <Link href="/guide">📖 使い方ガイド</Link>
+            </Button>
           </div>
           <p className="text-xs text-muted-foreground">
             導入のご相談・デモのご依頼はお気軽にお問い合わせください。
@@ -152,6 +155,7 @@ export default function HomePage() {
             <CalendarCheck className="size-4 text-primary" /> 予約システム SaaS
           </span>
           <nav className="flex flex-wrap items-center justify-center gap-x-5 gap-y-1 text-xs">
+            <Link href="/guide" className="hover:text-foreground hover:underline">使い方ガイド</Link>
             <Link href="/legal/terms" className="hover:text-foreground hover:underline">利用規約</Link>
             <Link href="/legal/privacy" className="hover:text-foreground hover:underline">プライバシーポリシー</Link>
             <Link href="/legal/tokushoho" className="hover:text-foreground hover:underline">特定商取引法に基づく表記</Link>
