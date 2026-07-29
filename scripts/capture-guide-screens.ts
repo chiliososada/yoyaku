@@ -48,8 +48,15 @@ async function main() {
     ['/admin/schedule', '11-schedule'],
     ['/admin/customers', '12-customers'],
     ['/admin/reports', '13-reports'],
-    // 17-billing はデモテナントがテスト契約 active のため再撮影しない（トライアル表示の既存画像を維持）。
-    // 撮り直す場合はデモテナントの stripeSubscriptionStatus を一時 NULL にしてから追加すること。
+    // 17-billing はここでは撮らない。本番のデモテナントは契約 active なので「ご契約中」表示になり、
+    // ガイドに必要な「トライアル＋プラン選択」の画面にならないため。
+    // 価格改定などで撮り直すときは**ローカル**で（本番データを触らずに済む）:
+    //   1) .env.local に STRIPE_SECRET_KEY=<ダミー文字列>（isStripeConfigured() を true にするだけ）
+    //   2) ローカルDBのプランへダミー stripePriceId を付与（プランカードの表示条件）＋本番と同じ上限値に揃える
+    //   3) デモテナントを billingExempt=false / stripeSubscriptionStatus=null / trialEndsAt=+30日 に
+    //   4) npm run dev → owner@demo.test でログインし /admin/billing を 1280x800 @2x jpeg q82 で撮影
+    //   5) .env.local とダミー Price ID を消し、デモテナントを billingExempt=true に戻す
+    // ガイドのピン座標（guide-steps.ts の 17-billing）は現行レイアウト前提。カード枚数が変わったら要確認。
   ];
   for (const [path, name] of adminPages) {
     await page.goto(`${BASE}${path}`, { waitUntil: 'networkidle' });
