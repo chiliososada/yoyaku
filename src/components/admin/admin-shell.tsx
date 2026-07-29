@@ -15,6 +15,7 @@ import {
   CreditCard,
   Globe,
   LayoutDashboard,
+  TrendingUp,
   LogOut,
   Menu,
   Package,
@@ -63,6 +64,7 @@ const MERCHANT_NAV: NavItem[] = [
 
 const PLATFORM_NAV: NavItem[] = [
   { href: '/platform', label: 'ダッシュボード', icon: LayoutDashboard },
+  { href: '/platform/metrics', label: '経営指標', icon: TrendingUp },
   { href: '/platform/tenants', label: '商家', icon: Building2 },
   { href: '/platform/plans', label: 'プラン', icon: Package },
   { href: '/platform/users', label: 'ユーザー', icon: Users },
