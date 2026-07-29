@@ -178,6 +178,7 @@ model Tenant {
   customers     Customer[]
   bookings      Booking[]
   subscriptions Subscription[]
+  billingEvents BillingEvent[]
   auditLogs     AuditLog[]
 
   @@index([status])
@@ -228,6 +229,54 @@ model Subscription {
   @@map("subscriptions")
 }
 
+/// 課金イベントの種別（MRR 変動の分類に使う）。
+enum BillingEventType {
+  TRIAL_STARTED
+  SUBSCRIPTION_CREATED
+  SUBSCRIPTION_UPDATED
+  PLAN_CHANGED
+  PAYMENT_SUCCEEDED
+  PAYMENT_FAILED
+  SUBSCRIPTION_CANCELED
+}
+
+/// 課金の**追記専用**イベントログ。MRR 推移・解約率・コホートの唯一の一次情報源。
+///
+/// なぜ Subscription と別に持つか:
+/// - Subscription は externalRef で upsert する「現在状態」であり、trial→active→canceled の
+///   遷移が互いを上書きして履歴が残らない。
+/// - 金額を Plan.priceJpy との JOIN で復元すると、値上げのたびに過去の MRR が遡って書き換わる。
+///   そのため発生時点の金額・プラン名をこの行に**スナップショット**して固定する。
+/// 行は決して UPDATE / DELETE しないこと。
+model BillingEvent {
+  id       String           @id @default(cuid())
+  tenantId String
+  type     BillingEventType
+  /// 発生時点のプラン（参照ではなくスナップショット。プラン削除・改名の影響を受けない）
+  planId    String?
+  planCode  String?
+  planName  String?
+  /// 発生時点の金額（円）。PAYMENT_SUCCEEDED では実際の請求額、契約系ではプラン価格。
+  amountJpy Int?
+  currency  String  @default("jpy")
+  /// 状態遷移（Stripe の subscription.status 生値）
+  fromStatus String?
+  toStatus   String?
+  /// Stripe 側の識別子。stripeEventId は再送時の冪等キー。
+  stripeEventId        String? @unique
+  stripeSubscriptionId String?
+  stripeInvoiceId      String?
+  /// イベント発生時刻（Stripe の created。無ければ受信時刻）
+  occurredAt DateTime @db.Timestamptz(6)
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, occurredAt])
+  @@index([type, occurredAt])
+  @@map("billing_events")
+}
+
 /// プラットフォーム全体設定（KV）。
 model SystemConfig {
   id          String   @id @default(cuid())
@@ -253,6 +302,10 @@ model User {
   name            String
   status          UserStatus @default(ACTIVE)
   isPlatformAdmin Boolean    @default(false)
+  /// セッション世代。JWT に刻印し、getSessionUser が毎回この値と照合する。
+  /// 停止・ログイン無効化・パスワードリセット時にインクリメントすると、
+  /// 既発行の JWT を即時に無効化できる（JWT セッションでもサーバー側失効を実現）。
+  sessionEpoch    Int        @default(0)
   lastLoginAt     DateTime?  @db.Timestamptz(6)
   /// 連続ログイン失敗回数（成功でリセット）。閾値超過で lockedUntil を設定
   failedLoginCount  Int       @default(0)
@@ -366,7 +419,8 @@ model Membership {
 model Shop {
   id                      String     @id @default(cuid())
   tenantId                String
-  slug                    String
+  /// 公開URL用。ルート `/{slug}` の専属ホームページ＆ `/book/{slug}` 予約ページに使用するためグローバル一意。
+  slug                    String     @unique
   name                    String
   description             String?
   phone                   String?
@@ -399,10 +453,56 @@ model Shop {
   customers           Customer[]
   memberships         Membership[]
   notificationRecipients NotificationRecipient[]
+  profile             ShopProfile?
 
   @@unique([tenantId, slug])
   @@index([tenantId, status])
   @@map("shops")
+}
+
+/// 店舗の「専属ホームページ」（SEO公開ページ）の編集可能コンテンツ。Shop と 1:1。
+/// 画像は uploads キー（`/uploads/{key}` で配信）。未設定でもホームページはブランドカラー＋既存情報で成立する。
+model ShopProfile {
+  id              String   @id @default(cuid())
+  shopId          String   @unique
+  tenantId        String
+  /// キャッチコピー（ヒーロー見出し下の一文）
+  tagline         String?
+  /// 紹介文（複数行可。プレーンテキストとして安全に描画）
+  about           String?
+  /// schema.org のビジネス種別（JSON-LD用）。例: HairSalon / BeautySalon / NailSalon / DaySpa / HealthAndBeautyBusiness
+  businessType    String   @default("HealthAndBeautyBusiness")
+  /// ヒーロー画像 / ロゴ の uploads キー
+  heroImageKey    String?
+  logoImageKey    String?
+  /// ギャラリー画像の uploads キー配列（string[]）
+  gallery         Json     @default("[]")
+  /// アクセス補足（最寄駅・駐車場など）
+  accessNote      String?
+  /// テーマ（アクセント）カラー #hex
+  themeColor      String?
+  instagramUrl    String?
+  lineUrl         String?
+  xUrl            String?
+  websiteUrl      String?
+  /// 公開スイッチ。false ならホームページは noindex＋非公開（404）
+  homepageEnabled Boolean  @default(false)
+  /// セクション表示トグル
+  showMenu        Boolean  @default(true)
+  showStaff       Boolean  @default(true)
+  showGallery     Boolean  @default(true)
+  /// 住所の公開（自宅サロン等はOFFでプライバシー保護。JSON-LD/地図にも影響）
+  showAddress     Boolean  @default(true)
+  /// SEO 手動上書き（未設定なら店名・紹介文から自動生成）
+  seoTitle        String?
+  seoDescription  String?
+  createdAt       DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime @updatedAt @db.Timestamptz(6)
+
+  shop            Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("shop_profiles")
 }
 
 /// スタッフ（施術者/担当者）。ログインユーザーと紐付け可能。
@@ -842,7 +942,9 @@ model NotificationJob {
   payload     Json                 @default("{}")
   status      NotificationStatus   @default(PENDING)
   attempts    Int                  @default(0)
-  maxAttempts Int                  @default(5)
+  /// 既定 9 回。バックオフ 2/4/8/16/30/30/30/30 分 = 計150分の障害に耐える。
+  /// （5 回だと 30 分で打ち切られ、LINE/SMTP の30〜60分障害で通知が永久に失われる）
+  maxAttempts Int                  @default(9)
   scheduledAt DateTime             @default(now()) @db.Timestamptz(6)
   sentAt      DateTime?            @db.Timestamptz(6)
   lastError   String?
@@ -853,6 +955,9 @@ model NotificationJob {
 
   @@index([status, scheduledAt])
   @@index([tenantId])
+  /// 予約のキャンセル/改期時に未送信リマインドを無効化する検索用。
+  /// 改期は advisory lock 保持中に走るため、ここが seq scan だとロック保持時間が伸びる。
+  @@index([bookingId])
   @@map("notification_jobs")
 }
 

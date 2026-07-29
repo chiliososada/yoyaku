@@ -52,6 +52,10 @@ services:
       REDIS_URL: redis://redis:6379
       REDIS_HOST: redis
       REDIS_PORT: '6379'
+      # 店舗ホームページの画像保存先（名前付きボリューム。コンテナ再作成でも保持）
+      UPLOADS_DIR: /app/uploads
+    volumes:
+      - uploads_data:/app/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -65,7 +69,10 @@ services:
     restart: unless-stopped
     env_file: .env.production
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-booking}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-booking_saas}?schema=public
+      # connection_limit を明示（未指定だと Prisma 既定 = CPUコア数*2+1。
+      # このホストは 40 コアのため 81 接続を確保しようとし、app(20) と合わせて
+      # max_connections=100（うち3はスーパーユーザー予約）を超えて枯渇する）
+      DATABASE_URL: postgresql://${POSTGRES_USER:-booking}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-booking_saas}?schema=public&connection_limit=10
       DIRECT_URL: postgresql://${POSTGRES_USER:-booking}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-booking_saas}?schema=public
       REDIS_URL: redis://redis:6379
       REDIS_HOST: redis
@@ -79,3 +86,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  uploads_data:

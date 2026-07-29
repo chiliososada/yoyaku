@@ -53,6 +53,9 @@ const schema = z.object({
   PLATFORM_BASIC_USER: z.string().optional(),
   PLATFORM_BASIC_PASS: z.string().optional(),
   PLATFORM_IP_ALLOWLIST: z.string().optional(),
+  /// アップロード画像の保存先ディレクトリ（店舗ホームページのヒーロー/ロゴ/ギャラリー）。
+  /// 本番は Docker のマウントボリューム（例 /app/uploads）。未設定なら CWD 配下 `uploads/`。
+  UPLOADS_DIR: z.string().optional(),
   // メール送信（SMTP）。SMTP_HOST 未設定なら通知はログのみ（送信無効）。
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.coerce.number().default(587),

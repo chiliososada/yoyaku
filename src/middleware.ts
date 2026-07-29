@@ -16,6 +16,7 @@ const { auth } = NextAuth(authConfig);
  */
 const OWNER_ONLY: ReadonlyArray<readonly [string, Permission]> = [
   ['/admin/settings', PERMISSIONS.SHOP_UPDATE],
+  ['/admin/homepage', PERMISSIONS.SHOP_UPDATE],
   ['/admin/qr', PERMISSIONS.SHOP_UPDATE],
   ['/admin/notifications', PERMISSIONS.SHOP_UPDATE],
   ['/admin/staff', PERMISSIONS.STAFF_WRITE],

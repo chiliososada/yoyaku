@@ -53,6 +53,13 @@ COPY --from=builder --chown=app:app /app/.next/standalone ./
 COPY --from=builder --chown=app:app /app/.next/static ./.next/static
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
+# sharp（店舗ホームページの画像最適化）: standalone のトレースが musl バイナリを
+# 取りこぼす場合があるため、依存を明示コピーして実行時の欠落を防ぐ。
+COPY --from=deps --chown=app:app /app/node_modules/sharp ./node_modules/sharp
+COPY --from=deps --chown=app:app /app/node_modules/@img ./node_modules/@img
+# uploads マウントポイントを app 所有で用意（空の名前付きボリューム初期化時に所有権が伝播。
+# これが無いと root 所有のボリュームに非rootの app が書けず、画像アップロードが EACCES で全滅する）
+RUN mkdir -p /app/uploads && chown app:app /app/uploads
 
 USER app
 EXPOSE 3000

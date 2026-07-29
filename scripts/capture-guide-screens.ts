@@ -42,12 +42,14 @@ async function main() {
     ['/admin/staff', '05-staff'],
     ['/admin/business-hours', '06-hours'],
     ['/admin/qr', '07-qr-web'],
+    ['/admin/homepage', '18-homepage'],
     ['/admin/notifications', '09-notifications'],
     ['/admin/bookings', '10-bookings'],
     ['/admin/schedule', '11-schedule'],
     ['/admin/customers', '12-customers'],
     ['/admin/reports', '13-reports'],
-    ['/admin/billing', '17-billing'],
+    // 17-billing はデモテナントがテスト契約 active のため再撮影しない（トライアル表示の既存画像を維持）。
+    // 撮り直す場合はデモテナントの stripeSubscriptionStatus を一時 NULL にしてから追加すること。
   ];
   for (const [path, name] of adminPages) {
     await page.goto(`${BASE}${path}`, { waitUntil: 'networkidle' });
@@ -61,6 +63,10 @@ async function main() {
       }
     }
   }
+
+  // --- 公開ホームページ（デモ店の専属HP） ---
+  await page.goto(`${BASE}/demo-salon`, { waitUntil: 'networkidle' });
+  await shot(page, '19-homepage-public');
 
   // --- お客様側の予約フロー ---
   await page.goto(`${BASE}/book/demo-salon`, { waitUntil: 'networkidle' });

@@ -42,10 +42,42 @@ docker exec booking-saas-postgres-1 pg_dump -U booking booking_saas | gzip > ~/b
 
 ## Kong（設定済み・参考）
 
+Kong は**ホスト側に常駐し他プロジェクトも捌いている**。変更は必ず booking-saas の
+service / route にスコープすること（全体適用は他サイトを巻き込む）。Admin API: `localhost:8001`
+
 - service `booking-saas` → `http://127.0.0.1:3200`
-- route `booking-saas` hosts=`yoyaku.arcs-ai.com`
+- route `booking-saas` hosts=`yoyaku.arcs-ai.com`（パス指定なし＝全体受け）
+- route `booking-saas-public` hosts=`yoyaku.arcs-ai.com` paths=`/api/public` **strip_path=false**
+  - ⚠️ `strip_path` を true にすると `/api/public` が剥がれて上流に届き、公開APIが全滅する
 - ACME plugin (`8ccbe896-…`) の `config.domains` に `yoyaku.arcs-ai.com` 追加済み。
   証明書は自動更新（Let's Encrypt）。手動再発行: `curl -X POST localhost:8001/acme -d host=yoyaku.arcs-ai.com`
+
+### レート制限（スクレイパーで全テナントが落ちるのを防ぐ）
+
+アプリ側にレート制限は無く、公開エンドポイントは誰でも叩ける。Node は単一プロセスのため
+1台のスクレイパーが event loop を飽和させると**全店舗が同時に落ちる**。Kong 層で IP 単位に制限する。
+
+| route | minute | hour | 対象 |
+|---|---|---|---|
+| `booking-saas-public` | 300 | 6,000 | `/api/public/*`（空き状況など高コスト） |
+| `booking-saas` | 1,200 | 30,000 | それ以外の全体（人間は到達しない兜底） |
+
+`policy=local`（ワーカーごとのカウンタ）・`limit_by=ip`・`fault_tolerant=true`。
+公開APIを 300/min にしているのは、日本のモバイルキャリアが CGNAT で
+複数の顧客が同一IPになりうるため（厳しすぎると実顧客を弾く）。
+
+確認: `curl -D - -o /dev/null https://yoyaku.arcs-ai.com/api/public/shops/demo-salon | grep -i ratelimit`
+
+**取り消し（元に戻す）**:
+```bash
+# プラグインだけ外す
+for r in booking-saas-public booking-saas; do
+  id=$(curl -s localhost:8001/routes/$r/plugins | python3 -c "import json,sys;d=json.load(sys.stdin)['data'];print(next((p['id'] for p in d if p['name']=='rate-limiting'),''))")
+  [ -n "$id" ] && curl -s -X DELETE localhost:8001/plugins/$id
+done
+# 公開API用ルートごと削除（元の単一ルート構成に戻す）
+curl -s -X DELETE localhost:8001/routes/booking-saas-public
+```
 
 ## アカウント
 

@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import { GuideViewer } from './guide-viewer';
 
 export const metadata: Metadata = {
-  title: '使い方ガイド | Yoyaku',
+  title: '使い方ガイド',
   description:
     'Yoyakuの使い方を画面写真つきでステップごとにご紹介。初期設定から集客・日々の運用・お客様の予約体験まで、このガイドだけで始められます。',
 };
