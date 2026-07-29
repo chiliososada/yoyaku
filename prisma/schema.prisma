@@ -230,6 +230,35 @@ model Subscription {
 }
 
 /// 課金イベントの種別（MRR 変動の分類に使う）。
+/// 公開セルフサーブ登録の申込。**メール検証が済むまでテナントは作らない**。
+/// 未検証の申込でテナントを作ると、いたずら登録でテナント表とトライアル台帳が汚れるため、
+/// この中間テーブルに保留し、検証リンクの消費時にはじめて createTenant を実行する。
+/// パスワードはここでも平文では持たない（bcrypt ハッシュのみ）。
+model SignupRequest {
+  id String @id @default(cuid())
+  /// 申込時のメール（検証成功時にオーナーユーザーのメールになる）
+  email String
+  /// 検証トークンの sha256。生値はメール本文にのみ存在する
+  tokenHash    String  @unique
+  tenantName   String
+  shopName     String
+  ownerName    String
+  passwordHash String
+  /// レート制限用の送信元 IP ハッシュ（生 IP は保持しない）
+  ipHash String?
+
+  expiresAt  DateTime  @db.Timestamptz(6)
+  /// 消費済み（テナント作成済み）。再利用不可
+  consumedAt DateTime? @db.Timestamptz(6)
+  /// 検証成功で作られたテナント（監査用）
+  tenantId  String?
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([email, createdAt])
+  @@index([ipHash, createdAt])
+  @@map("signup_requests")
+}
+
 enum BillingEventType {
   TRIAL_STARTED
   SUBSCRIPTION_CREATED
