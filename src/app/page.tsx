@@ -95,14 +95,18 @@ export default function HomePage() {
               </Link>
             </Button>
             <Button asChild size="lg" variant="outline" className="h-12 bg-white/80 px-7 text-base backdrop-blur">
-              <Link href="/admin">管理画面へ</Link>
+              <Link href="/signup">30日間 無料ではじめる</Link>
             </Button>
             <Button asChild size="lg" variant="ghost" className="h-12 px-6 text-base">
               <Link href="/guide">📖 使い方ガイド</Link>
             </Button>
           </div>
           <p className="text-xs text-muted-foreground">
-            導入のご相談・デモのご依頼はお気軽にお問い合わせください。
+            初期費用0円・カード登録不要。すでにご利用の方は{' '}
+            <Link href="/admin" className="text-primary hover:underline">
+              管理画面へ
+            </Link>
+            。
           </p>
         </div>
       </section>

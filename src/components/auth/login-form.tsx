@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { signIn } from 'next-auth/react';
 import { Loader2, MailCheck, ShieldCheck } from 'lucide-react';
@@ -151,6 +152,13 @@ export function LoginForm() {
       <Button type="submit" disabled={loading} className="w-full">
         {loading ? <Loader2 className="size-4 animate-spin" /> : phase === 'otp' ? '認証してログイン' : 'ログイン'}
       </Button>
+
+      <p className="text-center text-sm text-muted-foreground">
+        アカウントをお持ちでない方は{' '}
+        <Link href="/signup" className="font-medium text-primary hover:underline">
+          30日間無料ではじめる
+        </Link>
+      </p>
     </form>
   );
 }
