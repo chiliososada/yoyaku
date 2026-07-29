@@ -77,8 +77,10 @@ describe('LINE 予約: 顧客通知の通道分岐', () => {
     const reminder = jobs.find((j) => j.template === 'BOOKING_REMINDER');
     expect(confirmed).toMatchObject({ channel: 'LINE', recipient: LINE_UID });
     expect(reminder).toMatchObject({ channel: 'LINE', recipient: LINE_UID });
-    // リマインドは開始 24 時間前にスケジュール
-    expect(reminder?.scheduledAt?.toISOString()).toBe('2026-09-07T00:00:00.000Z');
+    // リマインドは開始 24 時間前（集中回避のため 0〜30 分のジッターあり）
+    const remLead = new Date('2026-09-08T00:00:00.000Z').getTime() - reminder!.scheduledAt!.getTime();
+    expect(remLead).toBeGreaterThanOrEqual(24 * 3600 * 1000);
+    expect(remLead).toBeLessThanOrEqual(24 * 3600 * 1000 + 30 * 60 * 1000);
     // メール宛の顧客ジョブ（@ を含む宛先）は作られない
     expect(jobs.some((j) => j.channel === 'EMAIL' && j.recipient.includes('@'))).toBe(false);
   });

@@ -11,6 +11,13 @@ import { logger } from '@/lib/logger';
 const PUSH_URL = 'https://api.line.me/v2/bot/message/push';
 const REPLY_URL = 'https://api.line.me/v2/bot/message/reply';
 
+/**
+ * API 呼び出しの上限時間（ミリ秒）。
+ * notification-service の PROCESSING 回収窓（5分）より必ず短くすること。
+ * 未設定の fetch は無期限に待つため、回収→再送で顧客への二重送信を招く。
+ */
+const LINE_TIMEOUT_MS = 15_000;
+
 /** LINE Messaging API が使える設定か（トークン + シークレット）。 */
 export function isLineConfigured(): boolean {
   return Boolean(env.LINE_CHANNEL_ACCESS_TOKEN && env.LINE_CHANNEL_SECRET);
@@ -48,6 +55,7 @@ export async function sendLineMessage(userId: string, text: string): Promise<voi
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ to: userId, messages: [{ type: 'text', text }] }),
+    signal: AbortSignal.timeout(LINE_TIMEOUT_MS),
   });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
@@ -66,6 +74,7 @@ export async function replyLineMessage(replyToken: string, text: string): Promis
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ replyToken, messages: [{ type: 'text', text }] }),
+      signal: AbortSignal.timeout(LINE_TIMEOUT_MS),
     });
     if (!res.ok) {
       logger.warn({ status: res.status }, '[line] reply failed');

@@ -7,6 +7,7 @@ import { PERMISSIONS, type Permission } from '@/lib/rbac';
 import { Errors } from '@/lib/errors';
 import { writeAudit } from '@/server/services/audit-service';
 import * as svc from '@/server/services/notification-recipient-service';
+import { retryFailedNotification } from '@/server/services/notification-service';
 import { lineAddFriendUrl } from '@/server/notifications/line';
 import { runAction, getRequestMeta, type ActionResult } from './action-utils';
 
@@ -69,5 +70,16 @@ export async function startLineLinkAction(
     const { code, expiresAt } = await svc.createLineLinkCode(user.tenantId, shopId, data.label || null, user.id);
     await audit(user, 'notification.line.link.start', code);
     return { code, addFriendUrl: lineAddFriendUrl(), expiresAt: expiresAt.toISOString() };
+  });
+}
+
+/** 配信できなかった通知を再送キューに戻す。 */
+export async function retryFailedNotificationAction(shopId: string, jobId: string): Promise<ActionResult> {
+  return runAction(async () => {
+    const user = await authz(PERMISSIONS.SHOP_UPDATE, shopId);
+    const ok = await retryFailedNotification(user.tenantId, jobId);
+    if (!ok) throw Errors.notFound('この通知は既に再送済みか、対象が見つかりません。');
+    await audit(user, 'notification.job.retry', jobId);
+    revalidatePath('/admin/notifications');
   });
 }

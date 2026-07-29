@@ -138,19 +138,119 @@ export async function processNotificationJob(jobId: string): Promise<'SENT' | 'F
   } catch (e) {
     const attempts = job.attempts + 1;
     const failed = attempts >= job.maxAttempts;
-    // 指数バックオフ（2/4/8/16分）。10秒スイープごとの即再試行で一時障害中に maxAttempts を使い切らないため。
+    // 指数バックオフ（2/4/8/16/30/30…分。上限30分）。10秒スイープごとの即再試行で
+    // 一時障害中に maxAttempts を使い切らないため。既定 9 回 = 計150分の障害に耐える。
     const backoffMs = Math.min(2 ** attempts, 30) * 60_000;
+    const errMessage = e instanceof Error ? e.message : String(e);
     await prisma.notificationJob.update({
       where: { id: job.id },
       data: {
         status: failed ? 'FAILED' : 'PENDING',
         attempts,
         ...(failed ? {} : { scheduledAt: new Date(Date.now() + backoffMs) }),
-        lastError: e instanceof Error ? e.message : String(e),
+        lastError: errMessage,
       },
     });
+    if (failed) {
+      // 打ち切り＝顧客/店長にその通知は永久に届かない。黙って消さず必ず残す。
+      logger.error(
+        { jobId: job.id, tenantId: job.tenantId, bookingId: job.bookingId, channel: job.channel, template: job.template, attempts, err: errMessage },
+        '[notification] giving up after max attempts — message will NOT be delivered',
+      );
+    } else {
+      logger.warn(
+        { jobId: job.id, template: job.template, attempts, retryInMin: backoffMs / 60_000, err: errMessage },
+        '[notification] send failed, will retry',
+      );
+    }
     return failed ? 'FAILED' : 'SKIPPED';
   }
+}
+
+export interface FailedNotification {
+  id: string;
+  channel: string;
+  template: string;
+  recipient: string;
+  attempts: number;
+  lastError: string | null;
+  createdAt: Date;
+  /** 紐づく予約（削除済み・予約なしの通知では null） */
+  booking: { id: string; startAt: Date; customerName: string; shopName: string; timezone: string } | null;
+}
+
+/**
+ * 配信を諦めた通知（FAILED）の一覧。店長が「届かなかった通知」を把握するため。
+ * テナント境界で必ず絞る。shopId 指定時はその店舗の予約に紐づくものだけ。
+ */
+export async function listFailedNotifications(
+  tenantId: string,
+  opts?: { shopId?: string; limit?: number },
+): Promise<FailedNotification[]> {
+  const rows = await prisma.notificationJob.findMany({
+    where: {
+      tenantId,
+      status: 'FAILED',
+      ...(opts?.shopId ? { booking: { shopId: opts.shopId } } : {}),
+    },
+    orderBy: { createdAt: 'desc' },
+    take: opts?.limit ?? 50,
+    select: {
+      id: true,
+      channel: true,
+      template: true,
+      recipient: true,
+      attempts: true,
+      lastError: true,
+      createdAt: true,
+      booking: {
+        select: {
+          id: true,
+          startAt: true,
+          customerName: true,
+          shop: { select: { name: true, timezone: true } },
+        },
+      },
+    },
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    channel: r.channel,
+    template: r.template,
+    recipient: r.recipient,
+    attempts: r.attempts,
+    lastError: r.lastError,
+    createdAt: r.createdAt,
+    booking: r.booking
+      ? {
+          id: r.booking.id,
+          startAt: r.booking.startAt,
+          customerName: r.booking.customerName,
+          shopName: r.booking.shop.name,
+          timezone: r.booking.shop.timezone,
+        }
+      : null,
+  }));
+}
+
+/** FAILED 件数（バッジ表示用）。 */
+export async function countFailedNotifications(tenantId: string, shopId?: string): Promise<number> {
+  return prisma.notificationJob.count({
+    where: { tenantId, status: 'FAILED', ...(shopId ? { booking: { shopId } } : {}) },
+  });
+}
+
+/**
+ * FAILED ジョブを再送キューに戻す。attempts をリセットして即時対象にする。
+ * テナント境界チェック込み。既に FAILED でない行は何もしない（多重クリック対策）。
+ */
+export async function retryFailedNotification(tenantId: string, jobId: string): Promise<boolean> {
+  const res = await prisma.notificationJob.updateMany({
+    where: { id: jobId, tenantId, status: 'FAILED' },
+    data: { status: 'PENDING', attempts: 0, scheduledAt: nowUtc(), lastError: null },
+  });
+  if (res.count > 0) logger.info({ jobId, tenantId }, '[notification] failed job requeued by operator');
+  return res.count > 0;
 }
 
 /** PENDING のアウトボックスを掃き出す。処理件数を返す。 */

@@ -1,18 +1,24 @@
 import { requireTenantUser } from '@/server/auth/authorize';
 import { getPrimaryShop } from '@/server/services/merchant-service';
 import { listRecipients } from '@/server/services/notification-recipient-service';
+import { listFailedNotifications } from '@/server/services/notification-service';
 import { isLineConfigured, lineAddFriendUrl } from '@/server/notifications/line';
 import { isEmailConfigured } from '@/server/notifications/email';
+import { formatBookingDateTime } from '@/lib/time';
 import { qrToSvg } from '@/lib/qr';
 import { PageHeader, Panel } from '@/components/admin/ui';
 import { NotificationRecipients } from '@/components/admin/notification-recipients';
+import { FailedNotifications } from '@/components/admin/failed-notifications';
 
 export const dynamic = 'force-dynamic';
 
 export default async function NotificationsPage() {
   const user = await requireTenantUser();
   const shop = await getPrimaryShop(user.tenantId);
-  const recipients = await listRecipients(user.tenantId, shop.id);
+  const [recipients, failed] = await Promise.all([
+    listRecipients(user.tenantId, shop.id),
+    listFailedNotifications(user.tenantId, { shopId: shop.id }),
+  ]);
 
   const addFriendUrl = lineAddFriendUrl();
   const addFriendQrSvg = addFriendUrl ? await qrToSvg(addFriendUrl) : null;
@@ -37,6 +43,28 @@ export default async function NotificationsPage() {
           emailConfigured={isEmailConfigured()}
           addFriendUrl={addFriendUrl}
           addFriendQrSvg={addFriendQrSvg}
+        />
+      </Panel>
+
+      <Panel title="配信できなかった通知" className="mt-6">
+        <FailedNotifications
+          shopId={shop.id}
+          items={failed.map((f) => ({
+            id: f.id,
+            channel: f.channel,
+            template: f.template,
+            recipient: f.recipient,
+            attempts: f.attempts,
+            lastError: f.lastError,
+            createdAtLabel: formatBookingDateTime(f.createdAt, shop.timezone),
+            booking: f.booking
+              ? {
+                  id: f.booking.id,
+                  customerName: f.booking.customerName,
+                  startAtLabel: formatBookingDateTime(f.booking.startAt, f.booking.timezone),
+                }
+              : null,
+          }))}
         />
       </Panel>
     </div>
