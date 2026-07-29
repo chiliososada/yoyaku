@@ -25,8 +25,10 @@ interface PlanCard {
 }
 
 interface Props {
-  state: 'DORMANT' | 'EXEMPT' | 'SUBSCRIBED' | 'TRIAL' | 'LOCKED';
+  state: 'DORMANT' | 'EXEMPT' | 'SUBSCRIBED' | 'TRIAL' | 'CANCELED_GRACE' | 'LOCKED';
   trialDaysLeft?: number;
+  /** CANCELED_GRACE のとき、いつまで使えるか（ISO 文字列） */
+  accessUntil?: string | null;
   canManage: boolean;
   hasPaymentAccount: boolean;
   subscriptionStatus: string | null;
@@ -86,8 +88,11 @@ export function BillingPanel(props: Props) {
   // Checkout から戻った直後はプランカードを出さない。
   // Webhook 同期の前は state が TRIAL/LOCKED のままなので、カードを出すと
   //「決済したのに変わらない → もう一度申し込む」を誘発し、契約が二本になる。
+  // 解約猶予中（CANCELED_GRACE）も再契約できるようカードを出す（startCheckout も canceled は許可）。
   const showPlans =
-    props.canManage && props.checkoutResult !== 'success' && (props.state === 'TRIAL' || props.state === 'LOCKED');
+    props.canManage &&
+    props.checkoutResult !== 'success' &&
+    (props.state === 'TRIAL' || props.state === 'LOCKED' || props.state === 'CANCELED_GRACE');
 
   return (
     <div className="grid gap-5">
@@ -189,6 +194,23 @@ export function BillingPanel(props: Props) {
             </p>
             <p className="mt-0.5 text-xs text-sky-800/80">
               期間中にプランへお申し込みいただくと、そのまま継続してご利用いただけます。
+            </p>
+          </div>
+        </div>
+      )}
+
+      {props.state === 'CANCELED_GRACE' && (
+        <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm">
+          <CalendarClock className="mt-0.5 size-5 shrink-0 text-amber-600" />
+          <div>
+            <p className="font-medium text-amber-900">
+              解約済み — {fmtDate(props.accessUntil ?? null)}までご利用いただけます
+            </p>
+            <p className="mt-0.5 text-xs text-amber-800/80">
+              お支払い済み期間の末日まで、これまでどおりすべての機能をお使いいただけます。
+              {props.canManage
+                ? '再開をご希望の場合は、下記のプランからお申し込みください。'
+                : '再開をご希望の場合は、オーナーの方にお申し込みをご依頼ください。'}
             </p>
           </div>
         </div>

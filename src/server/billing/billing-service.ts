@@ -28,15 +28,19 @@ export interface TenantBillingInfo {
   billingExempt: boolean;
   stripeSubscriptionStatus: string | null;
   trialEndsAt: Date | null;
+  /** 支払い済み期間の末日（Stripe の current_period_end）。解約後の猶予判定に使う。 */
+  currentPeriodEnd: Date | null;
 }
 
-export type BillingState = 'DORMANT' | 'EXEMPT' | 'SUBSCRIBED' | 'TRIAL' | 'LOCKED';
+export type BillingState = 'DORMANT' | 'EXEMPT' | 'SUBSCRIBED' | 'TRIAL' | 'CANCELED_GRACE' | 'LOCKED';
 
 export interface BillingGate {
   allowed: boolean;
   state: BillingState;
   /** TRIAL のとき残り日数（切り上げ、最小 0） */
   trialDaysLeft?: number;
+  /** CANCELED_GRACE のとき、いつまで使えるか（＝支払い済み期間の末日） */
+  accessUntil?: Date;
 }
 
 /** Stripe status のうち後台アクセスを許可するもの（past_due は督促中の猶予として許可）。 */
@@ -61,6 +65,18 @@ export function evaluateBillingAccess(
   if (tenant.stripeSubscriptionStatus && ALLOWED_SUB_STATUSES.has(tenant.stripeSubscriptionStatus)) {
     return { allowed: true, state: 'SUBSCRIBED' };
   }
+  // 解約後の猶予: 支払い済み期間の末日までは使えると規約・特商法・LP で明示している
+  // （「解約後も、お支払い済み期間の末日までご利用いただけます」）。Stripe Portal の
+  // 既定は期末解約なのでこの分岐に入らないことも多いが、即時解約が有効な設定や
+  // 期中の解約でもその約束を守れるよう、実装側で保証する。
+  // incomplete_expired（＝一度も決済が完了していない）には猶予を与えない。
+  if (
+    tenant.stripeSubscriptionStatus === 'canceled' &&
+    tenant.currentPeriodEnd &&
+    tenant.currentPeriodEnd.getTime() > opts.now.getTime()
+  ) {
+    return { allowed: true, state: 'CANCELED_GRACE', accessUntil: tenant.currentPeriodEnd };
+  }
   if (tenant.trialEndsAt && tenant.trialEndsAt.getTime() > opts.now.getTime()) {
     const daysLeft = Math.max(0, Math.ceil((tenant.trialEndsAt.getTime() - opts.now.getTime()) / 86_400_000));
     return { allowed: true, state: 'TRIAL', trialDaysLeft: daysLeft };
@@ -73,7 +89,7 @@ export async function loadBillingGate(tenantId: string): Promise<BillingGate> {
   if (!isStripeConfigured()) return { allowed: true, state: 'DORMANT' };
   const t = await prisma.tenant.findUnique({
     where: { id: tenantId },
-    select: { billingExempt: true, stripeSubscriptionStatus: true, trialEndsAt: true },
+    select: { billingExempt: true, stripeSubscriptionStatus: true, trialEndsAt: true, currentPeriodEnd: true },
   });
   if (!t) return { allowed: false, state: 'LOCKED' };
   return evaluateBillingAccess(t, { now: nowUtc(), stripeConfigured: true });
@@ -398,7 +414,9 @@ async function syncSubscription(
       stripeCustomerId: sub.customer || undefined,
       stripeSubscriptionId: sub.id,
       stripeSubscriptionStatus: status,
-      currentPeriodEnd: periodEnd ? new Date(periodEnd * 1000) : null,
+      // イベントが期間情報を含まないときは既知の値を保持する（null で潰さない）。
+      // 解約イベントで潰すと「支払い済み期間の末日まで利用可」の猶予判定が効かなくなる。
+      ...(periodEnd ? { currentPeriodEnd: new Date(periodEnd * 1000) } : {}),
       ...(plan ? { planId: plan.id } : {}),
       ...(tenantStatus ? { status: tenantStatus } : {}),
       ...(eventAtMs ? { lastStripeEventAt: new Date(eventAtMs) } : {}),

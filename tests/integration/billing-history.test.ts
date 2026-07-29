@@ -9,7 +9,12 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { prisma } from '@/lib/db';
-import { processStripeEvent, remainingTrialDays, startCheckout } from '@/server/billing/billing-service';
+import {
+  evaluateBillingAccess,
+  processStripeEvent,
+  remainingTrialDays,
+  startCheckout,
+} from '@/server/billing/billing-service';
 import { isAppError, type AppError } from '@/lib/errors';
 import { seedScenario, cleanupTenant } from '../helpers/seed';
 
@@ -272,6 +277,70 @@ describe('解約が集計可能になっている', () => {
     });
     expect(t.status).toBe('CANCELLED');
     expect(t.stripeSubscriptionStatus).toBe('canceled');
+  });
+});
+
+describe('解約後の猶予が Webhook 経由でも成立する', () => {
+  it('期中解約でも支払い済み期間の末日まで使え、期間情報の無い解約イベントでも末日が消えない', async () => {
+    const sc = await seedScenario({ staffCount: 1 });
+    createdTenants.push(sc.tenantId);
+    const suffix = sc.tenantId.slice(-8);
+    const price = `price_grace_${suffix}`;
+    const plan = await prisma.plan.create({
+      data: { code: `grace-${suffix}`, name: '猶予検証', priceJpy: 9800, stripePriceId: price },
+    });
+    createdPlans.push(plan.id);
+    const cus = `cus_grace_${suffix}`;
+    const sub = `sub_grace_${suffix}`;
+    // 12日後が支払い済み期間の末日
+    const periodEndSec = Math.floor((Date.now() + 12 * 86_400_000) / 1000);
+    await prisma.tenant.update({
+      where: { id: sc.tenantId },
+      data: { stripeCustomerId: cus, billingExempt: false, planId: plan.id, trialEndsAt: new Date(Date.now() - 86_400_000) },
+    });
+
+    // 契約 → 期間末日が同期される
+    await processStripeEvent({
+      id: `evt_grace_active_${suffix}`,
+      type: 'customer.subscription.created',
+      created: nextTs(),
+      data: { object: {
+        id: sub, customer: cus, status: 'active', metadata: { tenantId: sc.tenantId },
+        items: { data: [{ price: { id: price }, current_period_end: periodEndSec }] },
+      } as Record<string, unknown> },
+    });
+
+    // 期中に即時解約。しかもイベントに期間情報が無いケース（API バージョン差で起こりうる）
+    await processStripeEvent({
+      id: `evt_grace_del_${suffix}`,
+      type: 'customer.subscription.deleted',
+      created: nextTs(),
+      data: { object: {
+        id: sub, customer: cus, status: 'canceled', metadata: { tenantId: sc.tenantId },
+        items: { data: [{ price: { id: price } }] },
+      } as Record<string, unknown> },
+    });
+
+    const t = await prisma.tenant.findUniqueOrThrow({
+      where: { id: sc.tenantId },
+      select: { billingExempt: true, stripeSubscriptionStatus: true, trialEndsAt: true, currentPeriodEnd: true, status: true },
+    });
+    expect(t.stripeSubscriptionStatus).toBe('canceled');
+    expect(t.status).toBe('CANCELLED');
+    // 期間情報の無い解約イベントで末日が null に潰されていないこと（潰れると猶予が消える）
+    expect(t.currentPeriodEnd).not.toBeNull();
+    expect(Math.abs(t.currentPeriodEnd!.getTime() - periodEndSec * 1000)).toBeLessThan(1000);
+
+    // 末日前は使える
+    const gate = evaluateBillingAccess(t, { now: new Date(), stripeConfigured: true });
+    expect(gate).toMatchObject({ allowed: true, state: 'CANCELED_GRACE' });
+
+    // 末日を過ぎたらロック
+    const after = evaluateBillingAccess(t, {
+      now: new Date(periodEndSec * 1000 + 1000),
+      stripeConfigured: true,
+    });
+    expect(after).toMatchObject({ allowed: false, state: 'LOCKED' });
   });
 });
 

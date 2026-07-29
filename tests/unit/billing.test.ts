@@ -7,7 +7,12 @@ import { evaluateBillingAccess } from '@/server/billing/billing-service';
 import { verifyStripeSignature, toFormBody } from '@/server/billing/stripe';
 
 const NOW = new Date('2026-07-18T00:00:00.000Z');
-const base = { billingExempt: false, stripeSubscriptionStatus: null as string | null, trialEndsAt: null as Date | null };
+const base = {
+  billingExempt: false,
+  stripeSubscriptionStatus: null as string | null,
+  trialEndsAt: null as Date | null,
+  currentPeriodEnd: null as Date | null,
+};
 
 describe('evaluateBillingAccess', () => {
   it('Stripe 未設定なら常に許可（休眠）', () => {
@@ -63,6 +68,60 @@ describe('evaluateBillingAccess', () => {
         { now: NOW, stripeConfigured: true },
       ),
     ).toMatchObject({ allowed: true, state: 'TRIAL' });
+  });
+});
+
+/**
+ * 「解約後も、お支払い済み期間の末日までご利用いただけます」— LP・利用規約・特商法表記で
+ * 明示している約束。Stripe Portal が期末解約でなく即時解約になっても守れるよう、
+ * 実装側で保証する（表示と実装の食い違いを作らない）。
+ */
+describe('解約後の猶予（支払い済み期間の末日まで）', () => {
+  const periodEnd = new Date(NOW.getTime() + 12 * 86_400_000);
+
+  it('解約済みでも期間末日前なら許可し、いつまで使えるかを返す', () => {
+    const g = evaluateBillingAccess(
+      { ...base, stripeSubscriptionStatus: 'canceled', currentPeriodEnd: periodEnd },
+      { now: NOW, stripeConfigured: true },
+    );
+    expect(g).toMatchObject({ allowed: true, state: 'CANCELED_GRACE' });
+    expect(g.accessUntil?.toISOString()).toBe(periodEnd.toISOString());
+  });
+
+  it('期間末日を過ぎたらロック', () => {
+    expect(
+      evaluateBillingAccess(
+        { ...base, stripeSubscriptionStatus: 'canceled', currentPeriodEnd: new Date(NOW.getTime() - 1000) },
+        { now: NOW, stripeConfigured: true },
+      ),
+    ).toMatchObject({ allowed: false, state: 'LOCKED' });
+  });
+
+  it('期間末日が不明（null）ならロック', () => {
+    expect(
+      evaluateBillingAccess(
+        { ...base, stripeSubscriptionStatus: 'canceled', currentPeriodEnd: null },
+        { now: NOW, stripeConfigured: true },
+      ),
+    ).toMatchObject({ allowed: false, state: 'LOCKED' });
+  });
+
+  it('一度も決済が完了していない incomplete_expired には猶予を与えない', () => {
+    expect(
+      evaluateBillingAccess(
+        { ...base, stripeSubscriptionStatus: 'incomplete_expired', currentPeriodEnd: periodEnd },
+        { now: NOW, stripeConfigured: true },
+      ),
+    ).toMatchObject({ allowed: false, state: 'LOCKED' });
+  });
+
+  it('契約中（active）は期間末日があっても SUBSCRIBED のまま', () => {
+    expect(
+      evaluateBillingAccess(
+        { ...base, stripeSubscriptionStatus: 'active', currentPeriodEnd: periodEnd },
+        { now: NOW, stripeConfigured: true },
+      ),
+    ).toMatchObject({ allowed: true, state: 'SUBSCRIBED' });
   });
 });
 

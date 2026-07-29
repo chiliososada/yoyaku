@@ -52,6 +52,7 @@ export default async function BillingPage({
         <BillingPanel
           state={gate.state}
           trialDaysLeft={gate.trialDaysLeft}
+          accessUntil={gate.accessUntil?.toISOString() ?? null}
           canManage={canManage}
           hasPaymentAccount={Boolean(tenant.stripeCustomerId)}
           subscriptionStatus={tenant.stripeSubscriptionStatus}
