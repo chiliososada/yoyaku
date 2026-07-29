@@ -82,7 +82,8 @@ export async function resetPasswordWithToken(rawToken: string, newPassword: stri
 
   const passwordHash = bcrypt.hashSync(newPassword, 10);
   await prisma.$transaction([
-    prisma.user.update({ where: { id: token.userId }, data: { passwordHash } }),
+    // sessionEpoch を進めて既存 JWT を即時失効（パスワード変更＝全端末ログアウト）
+    prisma.user.update({ where: { id: token.userId }, data: { passwordHash, sessionEpoch: { increment: 1 } } }),
     // このユーザーの全未使用トークンを無効化（使用済み含め再利用不可に）
     prisma.passwordResetToken.updateMany({ where: { userId: token.userId, usedAt: null }, data: { usedAt: nowUtc() } }),
   ]);
@@ -103,7 +104,11 @@ export async function adminResetPassword(userId: string): Promise<{ email: strin
 
   const newPassword = generatePassword();
   await prisma.$transaction([
-    prisma.user.update({ where: { id: user.id }, data: { passwordHash: bcrypt.hashSync(newPassword, 10) } }),
+    // sessionEpoch を進めて既存 JWT を即時失効（管理者リセット＝当該ユーザーの全端末ログアウト）
+    prisma.user.update({
+      where: { id: user.id },
+      data: { passwordHash: bcrypt.hashSync(newPassword, 10), sessionEpoch: { increment: 1 } },
+    }),
     prisma.passwordResetToken.updateMany({ where: { userId: user.id, usedAt: null }, data: { usedAt: nowUtc() } }),
   ]);
   return { email: user.email, newPassword };

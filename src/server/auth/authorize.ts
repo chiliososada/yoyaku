@@ -13,7 +13,26 @@ export type SessionUser = NonNullable<Session['user']>;
 
 export async function getSessionUser(): Promise<SessionUser | null> {
   const session = await auth();
-  return session?.user ?? null;
+  const user = session?.user ?? null;
+  if (!user) return null;
+  // JWT はサーバー側に状態を持たないため、停止・無効化・パスワードリセットを
+  // 即時反映するには毎リクエストで DB と照合する必要がある（Node 実行のここが全入口の合流点）。
+  // status が ACTIVE でない／論理削除済み／sessionEpoch 不一致なら失効扱い（= 未ログイン）。
+  try {
+    const { prisma } = await import('@/lib/db');
+    const fresh = await prisma.user.findUnique({
+      where: { id: user.id },
+      select: { status: true, deletedAt: true, sessionEpoch: true },
+    });
+    if (!fresh || fresh.status !== 'ACTIVE' || fresh.deletedAt) return null;
+    // 既存トークン（この機能導入前に発行）は sessionEpoch を持たない → 0 とみなし DB(既定0)と一致
+    if ((user.sessionEpoch ?? 0) !== fresh.sessionEpoch) return null;
+  } catch {
+    // リクエストコンテキスト外（worker/test 等）では照合不能。ここに来る経路は
+    // 認証を要求しないため、トークンをそのまま返す（既存挙動を壊さない）。
+    return user;
+  }
+  return user;
 }
 
 /** ログイン必須（ページ用）。未ログインは /login へ。 */

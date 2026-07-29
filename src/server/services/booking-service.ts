@@ -8,6 +8,7 @@
  *     3) booking + booking_items を挿入（GiST 排他制約が最終防御）
  *   を行う。二人が最後の1枠を同時に取りに来ても、片方のみ成功する。
  */
+import { randomInt } from 'node:crypto';
 import { prisma, Prisma, type DbClient } from '@/lib/db';
 import { Errors, type AppErrorCode } from '@/lib/errors';
 import { nowUtc, zonedDateString, zonedDateMinutesToUtc, isoDateAddDays } from '@/lib/time';
@@ -36,6 +37,7 @@ import {
   type ServiceContext,
   type ServiceOptionRow,
 } from '@/server/repositories/booking-repository';
+import { assertPublicBookingQuota } from '@/server/services/billing-quota-service';
 
 // ---- ルール解決 ----
 
@@ -452,6 +454,23 @@ export interface CreateBookingResult {
   idempotentReplay: boolean;
 }
 
+/**
+ * リマインダーの送信予定時刻（前日同時刻）を求める。
+ *
+ * 予約開始時刻は slotIntervalMin（既定15分）に量子化されているため、単純に
+ * 「開始 - 24時間」にすると同一時刻に大量のリマインダーが集中する。
+ * スイープは scheduledAt 昇順・優先度なしのため、その直後に発生した
+ * 予約確認メールがリマインダーの山の後ろに回り、配信が数十秒〜数分遅れる。
+ * 0〜30分のジッターを引いて山を崩す（前日リマインドとしての意味は変わらない）。
+ */
+const REMINDER_LEAD_MS = 24 * 60 * 60 * 1000;
+const REMINDER_JITTER_MAX_MS = 30 * 60 * 1000;
+
+function reminderScheduledAt(startAt: Date): Date {
+  const jitter = randomInt(0, REMINDER_JITTER_MAX_MS);
+  return new Date(startAt.getTime() - REMINDER_LEAD_MS - jitter);
+}
+
 const REASON_TO_ERROR: Record<SlotUnavailableReason, { code: AppErrorCode; msg: string }> = {
   SLOT_FULL: { code: 'SLOT_FULL', msg: '申し訳ございません。ご希望の時間帯は満席です。' },
   OUTSIDE_BUSINESS_HOURS: { code: 'OUTSIDE_BUSINESS_HOURS', msg: '選択された時間は営業時間外です。' },
@@ -543,6 +562,13 @@ export async function createBooking(input: CreateBookingInput): Promise<CreateBo
       },
     });
     if (existing) return { ...existing, idempotentReplay: true };
+  }
+
+  // プランの月間予約上限（猶予帯あり）。オンライン予約(PUBLIC)のみ対象＝後台/取込は常に許可。
+  // 冪等リプレイの後に置くのが要点: 既存予約のリトライを「新規1件」と誤カウントして
+  // 上限直下のリトライを弾かないようにする（リプレイは上で return 済み）。
+  if ((input.source ?? 'PUBLIC') === 'PUBLIC') {
+    await assertPublicBookingQuota(input.tenantId, now);
   }
 
   try {
@@ -797,7 +823,7 @@ export async function createBooking(input: CreateBookingInput): Promise<CreateBo
 
         // リマインドを開始24時間前にスケジュール（未来かつ宛先ありのとき）。
         // worker のアウトボックス掃き出しが scheduledAt<=now のみ処理するため、時刻到来まで送られない。
-        const reminderAt = new Date(input.startAt.getTime() - 24 * 60 * 60 * 1000);
+        const reminderAt = reminderScheduledAt(input.startAt);
         if (custRecipient && reminderAt.getTime() > now.getTime()) {
           await tx.notificationJob.create({
             data: {
@@ -1144,8 +1170,25 @@ export async function rescheduleBooking(input: RescheduleBookingInput): Promise<
         const staffIdReq = input.newStaffId === undefined ? b.staffId : input.newStaffId;
 
         const combo = await loadComboContext(tx, b.tenantId, b.shopId, serviceItems, staffIdReq);
-        if (staffIdReq && combo.requiresStaff && !combo.candidateStaffIds.includes(staffIdReq)) {
-          throw reasonError('STAFF_UNAVAILABLE');
+        if (staffIdReq) {
+          // createBooking と同じく、指名スタッフが当該店舗の実在・有効・予約可能な
+          // スタッフであることを検証する。requiresStaff=false のサービスでも、外部/他店舗/
+          // 停止・削除済みの staffId を割り当てられないようにする（改期経路の欠落だった）。
+          const staffRow = await tx.staff.findFirst({
+            where: {
+              id: staffIdReq,
+              shopId: b.shopId,
+              tenantId: b.tenantId,
+              status: 'ACTIVE',
+              isBookable: true,
+              deletedAt: null,
+            },
+            select: { id: true },
+          });
+          if (!staffRow) throw Errors.notFound('指名されたスタッフが見つかりません。');
+          if (combo.requiresStaff && !combo.candidateStaffIds.includes(staffIdReq)) {
+            throw reasonError('STAFF_UNAVAILABLE');
+          }
         }
 
         // (1) advisory lock（店舗×新暦日）
@@ -1274,7 +1317,7 @@ export async function rescheduleBooking(input: RescheduleBookingInput): Promise<
         // LINE 経由予約は LINE、それ以外はメールで顧客へ（重複送信しない）。
         const custChannel = b.customerLineUserId ? 'LINE' : 'EMAIL';
         const custRecipient = b.customerLineUserId ?? b.customerEmail ?? '';
-        const reminderAt = new Date(input.newStartAt.getTime() - 24 * 60 * 60 * 1000);
+        const reminderAt = reminderScheduledAt(input.newStartAt);
         if (custRecipient && reminderAt.getTime() > now.getTime()) {
           await tx.notificationJob.create({
             data: { tenantId: b.tenantId, bookingId: b.id, channel: custChannel, template: 'BOOKING_REMINDER', recipient: custRecipient, status: 'PENDING', scheduledAt: reminderAt, payload: { bookingId: b.id, kind: 'reminder' } },

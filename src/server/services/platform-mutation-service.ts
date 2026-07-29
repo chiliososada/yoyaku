@@ -2,6 +2,7 @@
  * プラットフォーム後台の書込サービス（プラットフォーム管理者専用）。
  */
 import bcrypt from 'bcryptjs';
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { Errors } from '@/lib/errors';
 import { nowUtc } from '@/lib/time';
@@ -67,7 +68,18 @@ export async function createTenant(input: CreateTenantInput) {
     });
     await tx.membership.create({ data: { userId: owner.id, roleId: ownerRole.id } });
 
-    return { tenantId: tenant.id, shopId: shop.id, ownerId: owner.id };
+    return { tenantId: tenant.id, shopId: shop.id, ownerId: owner.id, planId: plan?.id ?? null };
+  }).then(async (created) => {
+    // トライアル開始を課金台帳へ（コホート分析の起点。台帳書込は best-effort でテナント作成を妨げない）
+    const { recordTrialStarted } = await import('@/server/billing/billing-service');
+    await recordTrialStarted(created.tenantId, created.planId, nowUtc());
+    return { tenantId: created.tenantId, shopId: created.shopId, ownerId: created.ownerId };
+  }).catch((e: unknown) => {
+    // 事前チェックと create の間の競合（slug/email 一意制約）→ 友好的な CONFLICT に変換
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      throw Errors.conflict('CONFLICT', 'slug またはメールアドレスが直前に他で使用されました。別の値でお試しください。');
+    }
+    throw e;
   });
 }
 
@@ -76,7 +88,11 @@ export async function setUserStatus(userId: string, status: 'ACTIVE' | 'SUSPENDE
   const user = await prisma.user.findFirst({ where: { id: userId, deletedAt: null }, select: { id: true, isPlatformAdmin: true } });
   if (!user) throw Errors.notFound('ユーザーが見つかりません。');
   if (user.isPlatformAdmin) throw Errors.forbidden('プラットフォーム管理者の状態は変更できません。');
-  await prisma.user.update({ where: { id: userId }, data: { status } });
+  // 停止時は sessionEpoch を進めて既存 JWT を即時失効（停止後も最大7日使えてしまう穴を塞ぐ）。
+  await prisma.user.update({
+    where: { id: userId },
+    data: status === 'SUSPENDED' ? { status, sessionEpoch: { increment: 1 } } : { status },
+  });
 }
 
 /** プラン編集。 */

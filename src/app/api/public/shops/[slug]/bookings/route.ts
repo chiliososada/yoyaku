@@ -9,6 +9,8 @@ export const dynamic = 'force-dynamic';
 export const POST = route(async (req: NextRequest, ctx: { params: { slug: string } }) => {
   const body = createBookingSchema.parse(await req.json());
   const { tenantId, shopId } = await resolveShopIds(ctx.params.slug);
+  // 月間予約上限（猶予帯あり）は createBooking 内で source==='PUBLIC' 時のみ適用。
+  // 冪等リプレイ後に検査するため、ここでは呼ばない（二重カウント/リトライ誤拒否を防ぐ）。
 
   const result = await createBooking({
     tenantId,

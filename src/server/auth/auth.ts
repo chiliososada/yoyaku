@@ -69,6 +69,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
               permissions: ctx.permissions,
               shopScopes: ctx.shopScopes,
               tenantWide: ctx.tenantWide,
+              sessionEpoch: ctx.sessionEpoch,
             };
           }
         }

@@ -168,7 +168,7 @@ export function computeAvailability(input: AvailabilityInput): SlotAvailability[
 
       // --- 時間制約 ---
       const leadOk = satisfiesLeadTime(startAt, now, rules.leadTimeMinHours);
-      const windowOk = isWithinBookingWindow(startAt, now, rules.bookingWindowDays);
+      const windowOk = isWithinBookingWindow(startAt, now, rules.bookingWindowDays, input.timeZone);
 
       let available = true;
       let reason: SlotAvailability['reason'] | undefined;

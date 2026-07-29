@@ -3,10 +3,25 @@
  * - 複数スコープ(SHOP/SERVICE/STAFF)の容量ルールを統合
  * - 受付期間(window)・締切(lead time)・キャンセル期限の判定
  */
-import { differenceInCalendarDays } from 'date-fns';
 import type { ResolvedBookingRules } from './types';
 
 const MS_PER_HOUR = 3_600_000;
+const MS_PER_DAY = 86_400_000;
+
+/**
+ * instant を指定タイムゾーンの暦日に落とし、エポック日番号（1970-01-01=0）で返す。
+ * ドメイン層を date-fns-tz 非依存に保つため Intl（Node 組込み）を用いる。
+ */
+function zonedDayIndex(instant: Date, timeZone: string): number {
+  // 'en-CA' ロケールは 'YYYY-MM-DD' 形式で返す
+  const ymd = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(instant);
+  return Math.floor(Date.parse(`${ymd}T00:00:00Z`) / MS_PER_DAY);
+}
 
 export interface CapacityRuleInput {
   scope: 'SHOP' | 'SERVICE' | 'STAFF';
@@ -71,14 +86,19 @@ export function resolveBookingRules(params: {
   };
 }
 
-/** 受付期間内か（開始が now から windowDays 以内）。 */
+/**
+ * 受付期間内か（開始が now から windowDays 以内）。
+ * 暦日差は店舗のタイムゾーンで数える。サーバー実行環境(UTC)の暦日で数えると、
+ * JST 深夜帯のスロットで境界が1日ずれる。
+ */
 export function isWithinBookingWindow(
   startAt: Date,
   now: Date,
   bookingWindowDays: number,
+  timeZone: string,
 ): boolean {
   if (startAt.getTime() < now.getTime()) return false;
-  return differenceInCalendarDays(startAt, now) <= bookingWindowDays;
+  return zonedDayIndex(startAt, timeZone) - zonedDayIndex(now, timeZone) <= bookingWindowDays;
 }
 
 /** 締切前か（開始の leadTimeMinHours 時間前を過ぎていない）。 */

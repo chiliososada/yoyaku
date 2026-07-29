@@ -17,9 +17,11 @@ import {
   staffOverrideSchema,
   shopCreateSchema,
   staffLoginSchema,
+  shopHomepageSchema,
   type StaffFormInput,
   type ServiceFormInput,
   type ShopSettingsInput,
+  type ShopHomepageInput,
   type SpecialDayInput,
   type BusinessHoursInput,
   type CapacityRuleInput,
@@ -27,6 +29,7 @@ import {
   type StaffOverrideInput,
 } from '@/lib/validation/admin';
 import * as svc from '@/server/services/merchant-mutation-service';
+import { saveHomepage } from '@/server/services/shop-homepage-service';
 import { runAction, getRequestMeta, type ActionResult } from './action-utils';
 
 async function authz(permission: Permission, shopId: string): Promise<SessionUser & { tenantId: string }> {
@@ -153,6 +156,17 @@ export async function updateShopSettingsAction(shopId: string, input: ShopSettin
     await audit(user, 'shop.update', 'shop', shopId);
     revalidatePath('/admin/settings');
     revalidatePath('/admin');
+  });
+}
+
+// ---- 店舗ホームページ（専属HP） ----
+export async function updateHomepageAction(shopId: string, input: ShopHomepageInput): Promise<ActionResult> {
+  return runAction(async () => {
+    const data = shopHomepageSchema.parse(input);
+    const user = await authz(PERMISSIONS.SHOP_UPDATE, shopId);
+    await saveHomepage(user.tenantId, shopId, data);
+    await audit(user, 'shop.homepage.update', 'shop', shopId);
+    revalidatePath('/admin/homepage');
   });
 }
 

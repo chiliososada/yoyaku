@@ -3,6 +3,7 @@
  * server actions から呼ばれる。複数書込はトランザクション。
  */
 import bcrypt from 'bcryptjs';
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { Errors } from '@/lib/errors';
 import { nowUtc } from '@/lib/time';
@@ -27,9 +28,38 @@ function dateOnly(d: string): Date {
   return new Date(`${d}T00:00:00.000Z`);
 }
 
+/**
+ * 契約プランのスタッフ上限を検査。上限に達していれば CONFLICT。
+ * プラン未設定時は既定 3 名（フリー相当）。createShop の maxShops 検査と同じ方針。
+ *
+ * 枠を消費するのは「在籍中（ACTIVE）」のみ。そのため
+ *   - 新規作成: ACTIVE で作るときだけ検査
+ *   - 更新: INACTIVE → ACTIVE の復帰時だけ検査
+ * とする。これが無いと INACTIVE で大量に作ってから一括で ACTIVE に戻す抜け道ができる。
+ */
+async function assertStaffQuota(tenantId: string, shopId: string): Promise<void> {
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: tenantId },
+    select: { plan: { select: { maxStaffPerShop: true, name: true } } },
+  });
+  const max = tenant?.plan?.maxStaffPerShop ?? 3;
+  // 在籍中（ACTIVE）のみを数える。退職者を INACTIVE で残す運用は普通なので、
+  // それを枠に含めると「15名プランなのに10名しか雇えない」となり、
+  // 実際には不要な上位プランへの変更を迫る誤った案内になる。
+  const current = await prisma.staff.count({ where: { shopId, deletedAt: null, status: 'ACTIVE' } });
+  if (current >= max) {
+    throw Errors.conflict(
+      'CONFLICT',
+      `ご契約プラン（${tenant?.plan?.name ?? 'フリー'}）のスタッフ登録上限（1店舗あたり${max}名）に達しています。上位プランへの変更をご検討ください。`,
+    );
+  }
+}
+
 // ---- スタッフ ----
 export async function createStaff(tenantId: string, shopId: string, input: StaffFormInput) {
   await assertShopInTenant(tenantId, shopId);
+  // 停止中で登録する分には枠を消費しない（復帰時に updateStaff 側で検査する）
+  if (input.status === 'ACTIVE') await assertStaffQuota(tenantId, shopId);
   return prisma.$transaction(async (tx) => {
     const staff = await tx.staff.create({
       data: {
@@ -84,8 +114,13 @@ export async function createStaff(tenantId: string, shopId: string, input: Staff
 
 export async function updateStaff(tenantId: string, shopId: string, staffId: string, input: StaffFormInput) {
   // shopId を WHERE に含めることで、店舗越境（別店舗のスタッフID）を NOT_FOUND で弾く。
-  const existing = await prisma.staff.findFirst({ where: { id: staffId, tenantId, shopId, deletedAt: null }, select: { id: true, shopId: true } });
+  const existing = await prisma.staff.findFirst({ where: { id: staffId, tenantId, shopId, deletedAt: null }, select: { id: true, shopId: true, status: true } });
   if (!existing) throw Errors.notFound('スタッフが見つかりません。');
+  // 停止中 → 在籍 への復帰は枠を1つ消費する。ここを見ないと
+  // 「INACTIVE で大量に作ってから一括で ACTIVE に戻す」で上限を回避できてしまう。
+  if (existing.status !== 'ACTIVE' && input.status === 'ACTIVE') {
+    await assertStaffQuota(tenantId, shopId);
+  }
   return prisma.$transaction(async (tx) => {
     const staff = await tx.staff.update({
       where: { id: staffId },
@@ -119,9 +154,18 @@ export async function updateStaff(tenantId: string, shopId: string, staffId: str
 }
 
 export async function softDeleteStaff(tenantId: string, shopId: string, staffId: string) {
-  const existing = await prisma.staff.findFirst({ where: { id: staffId, tenantId, shopId, deletedAt: null }, select: { id: true } });
+  const existing = await prisma.staff.findFirst({
+    where: { id: staffId, tenantId, shopId, deletedAt: null },
+    select: { id: true, userId: true },
+  });
   if (!existing) throw Errors.notFound('スタッフが見つかりません。');
-  await prisma.staff.update({ where: { id: staffId }, data: { deletedAt: nowUtc(), status: 'INACTIVE', isBookable: false } });
+  await prisma.$transaction(async (tx) => {
+    await tx.staff.update({ where: { id: staffId }, data: { deletedAt: nowUtc(), status: 'INACTIVE', isBookable: false } });
+    // 削除したスタッフのログインも失効させる（放置すると退職者が最大7日ログインできてしまう）。
+    if (existing.userId) {
+      await tx.user.update({ where: { id: existing.userId }, data: { status: 'SUSPENDED', sessionEpoch: { increment: 1 } } });
+    }
+  });
 }
 
 /**
@@ -167,7 +211,8 @@ export async function setStaffLogin(tenantId: string, shopId: string, staffId: s
 export async function disableStaffLogin(tenantId: string, shopId: string, staffId: string) {
   const staff = await prisma.staff.findFirst({ where: { id: staffId, tenantId, shopId, deletedAt: null }, select: { userId: true } });
   if (!staff?.userId) return;
-  await prisma.user.update({ where: { id: staff.userId }, data: { status: 'SUSPENDED' } });
+  // sessionEpoch を進めて既存 JWT を即時失効（無効化後も最大7日ログインできてしまう穴を塞ぐ）。
+  await prisma.user.update({ where: { id: staff.userId }, data: { status: 'SUSPENDED', sessionEpoch: { increment: 1 } } });
 }
 
 // ---- サービス ----
@@ -323,27 +368,35 @@ export async function createShop(tenantId: string, input: ShopCreateInput) {
     throw Errors.conflict('CONFLICT', `ご契約プランの店舗数上限（${maxShops}店舗）に達しています。`);
   }
 
-  return prisma.$transaction(async (tx) => {
-    const shop = await tx.shop.create({
-      data: {
-        tenantId,
-        slug: input.slug,
-        name: input.name,
-        timezone: input.timezone || 'Asia/Tokyo',
-        status: 'DRAFT',
-        publicBookingEnabled: false,
-        closeOnNationalHolidays: true,
-        settings: { shopCapacity: 1 },
-      },
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const shop = await tx.shop.create({
+        data: {
+          tenantId,
+          slug: input.slug,
+          name: input.name,
+          timezone: input.timezone || 'Asia/Tokyo',
+          status: 'DRAFT',
+          publicBookingEnabled: false,
+          closeOnNationalHolidays: true,
+          settings: { shopCapacity: 1 },
+        },
+      });
+      await tx.businessHours.createMany({
+        data: [1, 2, 3, 4, 5, 6].map((dow) => ({ tenantId, shopId: shop.id, dayOfWeek: dow, openMinute: 600, closeMinute: 1140 })),
+      });
+      await tx.bookingCapacityRule.create({
+        data: { tenantId, shopId: shop.id, scope: 'SHOP', maxConcurrent: 1, slotIntervalMin: 30, bookingWindowDays: 30, leadTimeMinHours: 2, cancellationDeadlineHours: 24 },
+      });
+      return shop;
     });
-    await tx.businessHours.createMany({
-      data: [1, 2, 3, 4, 5, 6].map((dow) => ({ tenantId, shopId: shop.id, dayOfWeek: dow, openMinute: 600, closeMinute: 1140 })),
-    });
-    await tx.bookingCapacityRule.create({
-      data: { tenantId, shopId: shop.id, scope: 'SHOP', maxConcurrent: 1, slotIntervalMin: 30, bookingWindowDays: 30, leadTimeMinHours: 2, cancellationDeadlineHours: 24 },
-    });
-    return shop;
-  });
+  } catch (e) {
+    // 事前チェックと create の間の競合（shops_slug_key）→ 友好的な CONFLICT に変換
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      throw Errors.conflict('CONFLICT', '店舗slugは既に使用されています。');
+    }
+    throw e;
+  }
 }
 
 // ---- 店舗設定 ----

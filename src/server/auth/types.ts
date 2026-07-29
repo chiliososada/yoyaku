@@ -12,6 +12,8 @@ export interface AuthContext {
   permissions: string[];
   shopScopes: string[];
   tenantWide: boolean;
+  /// セッション世代（DB の users.sessionEpoch）。失効判定に使う。
+  sessionEpoch: number;
 }
 
 declare module 'next-auth' {
@@ -23,6 +25,7 @@ declare module 'next-auth' {
       permissions: string[];
       shopScopes: string[];
       tenantWide: boolean;
+      sessionEpoch: number;
     } & DefaultSession['user'];
   }
 
@@ -32,5 +35,6 @@ declare module 'next-auth' {
     permissions?: string[];
     shopScopes?: string[];
     tenantWide?: boolean;
+    sessionEpoch?: number;
   }
 }

@@ -275,12 +275,60 @@ Stripe 有効化のセキュリティ質問票に**正直に「はい」と答�
 - 入口: LP ヒーロー第3ボタン「📖 使い方ガイド」・LP フッター・商家後台サイドバー下部（新規タブ）。
 - 検証: 全ゲート緑（vitest 200）→ 本番で 200・画像配信・「次へ」遷移・章ジャンプ（ご契約→STEP17）・ピン位置（ダッシュボードの予約URL帯/課金のトライアル帯+申込ボタン）・モバイル表示をブラウザ実測。
 
-## ▶ 次の一手 — Iteration 15+: 余白（任意）
-全要件＋拡張＋運用周りを実装済み。残るは純粋に任意:
-1. **simplify**: 各ページ重複 `Row` を共有 UI 化（低優先）。
-2. RBAC 境界の追加テスト / route handler の集成テスト（網羅の上積み）。
-3. （将来拡張枠）Sentry 実配線 / LINE・SMS 送信 / Stripe 決済。
-※ 要件は完全充足。E2E は production build 前提（`npm run dev` 後は `npm run build` してから `test:e2e`）。
+## 🏠 店舗専用ホームページ（ルート `/{slug}`）— SEO + 地推用（2026-07-25 本番展開）
+「まだHPを持たない店舗にHPごと提供」する地推の武器 + SEO 導線。
+- **DB**: `ShopProfile`（Shop と 1:1 — キャッチコピー/紹介文/こだわり/アクセス/支払方法/SNS/画像キー/showAddress）+ `shops.slug` を**グローバル unique 化** + 予約語リスト（admin/api/book/legal 等はスラッグ不可）。
+- **公開ページ** `/[slug]`（ルート直下・force-dynamic）: hero/メニュー/スタッフ/こだわり/営業時間/アクセス/SNS/予約CTA。`generateMetadata` + **JSON-LD LocalBusiness** + 動的 `sitemap.ts`/`robots.ts`（公開店舗のみ列挙）。
+- **画像**: `/api/uploads`（SHOP_UPDATE + 店舗スコープ検証、sharp で webp 変換・`fit:'inside'` 最大2000px=切り抜きなし）→ Docker named volume `uploads_data` に保存、配信は `/uploads/[key]`（immutable キャッシュ）。
+- **後台エディタ** `/admin/homepage`（ナビ「ホームページ」）: 全項目フォーム + 画像アップロード UI（hero/logo/gallery）+ プレビューリンク。
+- **本番で踏んだ穴3つ（今後の教訓）**: ① rsync の `--exclude uploads`（非アンカー）が `src/app/api/uploads/` の**ソースまで除外**し 500 → `--exclude '/uploads'` にアンカー化 ② named volume が root 所有で非rootアプリが EACCES → Dockerfile で `mkdir+chown` を USER 切替前に実行 ③ hero が二重クロップで不格好 → アップロードは無切り抜き + 表示は min-height + 適応スクリム に変更。
+- 検証: 全ゲート緑 → 本番で公開ページ/JSON-LD/sitemap/画像アップロード〜表示まで実測済み。
+
+## 📮 通知の信頼性強化 + 失敗可視化 + Kong レート制限（2026-07-27 本番展開）
+- **NOTIF①** 送信タイムアウト（SMTP 30s/LINE 15s の AbortController）→ ハング時の二重送信を防止。
+- **NOTIF②** リトライを最大 9 回・指数バックオフ上限延長（一時障害を乗り切る）+ `notification_jobs.bookingId` index。
+- **NOTIF③** リマインダー送信時刻をジッター分散（同時刻集中による SMTP スロットリング回避）。
+- **VIS①** `/admin/notifications` に**失敗通知の可視化 + 再送ボタン**（オペレータが気付ける）。
+- **VIS②** Kong に `/api/public` 専用 route（`strip_path=false`）+ **per-IP レート制限**（local policy）。公開予約 API の濫用防御。
+- 検証: vitest 全緑 + 本番反映済み。
+
+## 💳 Stripe 本番切替（LIVE 課金稼働開始）（2026-07-28）
+Stripe 審査通過 → 本番モードへ切替完了。**実カードで課金できる状態**。
+- 本番商品/価格: スタンダード ¥9,800/月（`price_1Ty0imGV54gVtfHZLZGcKDC4`）・プロ ¥29,800/月（`price_1Ty0pbGV54gVtfHZmO3f7m99`）をプランに紐付け。本番 webhook 送信先登録。`sk_live`/`whsec` は運営が `.env.production` へ直接投入（チャット/リポジトリに非露出）→ app/worker 再作成。
+- 口座登録は**カタカナ名義**が必要（銀行審査エラーで判明）。
+- テストモード価格からの移行: Stripe の price は**不変オブジェクト**のため新規作成して差替（旧 price はアーカイブ）。
+
+## 🧱 P0 課金基盤 —「顧客が来る前にしか作れないもの」（2026-07-28 本番展開）
+地推開始前の不可逆項目を先に整備（ロードマップ Phase 0、詳細は `~/.claude/plans/snazzy-inventing-cook.md`）。
+- **P0-a 追記専用の課金台帳 `BillingEvent`**: 全遷移（TRIAL_STARTED/SUBSCRIPTION_CREATED/UPDATED/PLAN_CHANGED/CANCELED/PAYMENT_SUCCEEDED/FAILED）を**発生時点の金額・プラン名スナップショット付き**で追記。`stripeEventId` unique + P2002 握り潰しで再送冪等。`invoice.paid` ハンドラ追加＝**実入金が DB に残る**（従来は皆無）。価格改定しても過去の MRR が書き換わらない。
+- **P0-b 解約の表現**: webhook が `tenant.status` を ACTIVE↔CANCELLED に遷移（従来は作成時 ACTIVE のまま死んだフィールド＝解約率が集計不能だった）。`/platform` の契約中/解約数を実データ化。
+- **P0-c プラン上限の強制**: `maxStaffPerShop`（ACTIVE スタッフのみカウント・その場拒否・上位プラン案内文言）/ `maxBookingsPerMonth`（**オンライン予約のみ**対象、10% 猶予帯 = 顧客の予約を安易に止めない、後台からの登録は常に可、顧客向け文面に課金事情を出さない）。`0=無制限`（バリデーション/フォーム/一覧対応）。FREE プランは isActive=false に（「30日間無料トライアル」の建付けと整合）。
+- **P0-d トライアル残日数の引継ぎ**: `createCheckoutSession` に `trial_period_days`（残日数切り上げ）。トライアル3日目に契約しても残り27日を失わない。
+- **[HIGH] 二重課金バグ修正（3層防御）**: `startCheckout` ガードが webhook 専用フィールドのみ参照で **Checkout完了〜webhook同期の窓で二本目を作れた** → ①ガードを `stripeSubscriptionId && status∉{canceled,incomplete_expired}` に拡大 ② checkout 成功帰還時はプラン札を非表示 ③ Stripe Idempotency-Key（10分バケット）④ `checkout.session.completed` が暫定 'incomplete' を先置き。同秒後退イベントのガード（active→incomplete の逆行拒否）も追加。**本番で4状態すべて実測済み**。
+- 検証: **vitest 246 全緑**（billing-history 統合 11 件含む）→ 本番反映。
+
+## 💴 P1 価格改定 ¥4,980 → ¥9,800（2026-07-28）
+競合実勢（¥9,790〜19,690）と訪問営業の経済性（LTV/CAC）から改定。既存契約はグランドファザリング（0件のため実影響なし）。
+- seed/プラン: STANDARD ¥9,800・有料プランの月間予約 0=無制限。コーポレートサイト（arcshomepage）の価格表記 6 箇所を更新。
+- 商業価値の結論（調査済み）: 売却価値は**コードではなく MRR×成長×創業者非依存の獲得経路**。0件=~¥0、100件=¥1,000万〜3,500万。→ **方針: これ以上作らず、有料10件を取る（Phase 2）**。
+
+## 🔐 FIX-A セッション即時失効（HIGH）+ FIX-B 6件（2026-07-29 本番展開）
+全体監査で確認した実バグを修正。**tsc ✓ / lint ✓ / vitest 257 ✓ / build ✓** → 本番反映・検証済み。
+- **FIX-A（HIGH）**: JWT セッションが発行後**一切再検証されず**、停止/ログイン無効化/パスワードリセット後も既発行トークンが最長30日有効だった。
+  - `users.sessionEpoch Int @default(0)`（migration `20260728120000_session_epoch`）を JWT に刻印し、**`getSessionUser` が毎リクエストで DB と照合**（status≠ACTIVE / 論理削除 / epoch 不一致 → 未ログイン扱い。全保護ページ/action/upload はここに合流）。
+  - **epoch++ の失効トリガ5箇所**: `disableStaffLogin` / `softDeleteStaff`（退職者のログインも停止＝従来は放置されていた）/ `setUserStatus(SUSPENDED)`（ACTIVE 復帰は据え置き）/ `adminResetPassword` / `resetPasswordWithToken`。
+  - `session.maxAge` 30日→**7日**。既存ログインは epoch=0 一致で無影響（強制ログアウトなし）。
+  - テスト: `session-revocation.test.ts` 7件（5トリガ + 照合意味論 + レガシートークン互換）。
+- **FIX-B**: ①月間クォータ検査を `createBooking` 内（冪等リプレイの**後**・PUBLIC 限定）へ移動 — リトライを新規1件と誤カウントして弾く問題を解消（`booking-quota-gate.test.ts` 2件） ②受付期間(window)の暦日差を**店舗TZ**で計算（UTC 暦日だと JST 深夜帯で1日ズレ — 据え置きだった既知課題を解消） ③改期時の指名スタッフ検証を createBooking と同等に（他店舗/停止/削除済みの staffId 割当を防止） ④アップロードの Content-Length を必須化（ヘッダ欠落で事前チェックを迂回する メモリDoS を封鎖、411 返却） ⑤課金台帳の初回契約分類 — checkout の 'incomplete' 先置き + trial とのプラン差で PLAN_CHANGED/UPDATED に化けていた → **Stripe イベント種別（created）を分類の権威に**（billing-history +2件） ⑥月間クォータの集計月を JST 暦月に（`monthStartInZone` 新設）。
+- **デプロイの教訓**: 3コマンド（rsync → build+入替 → migrate）を**逐次待ち**で実行すること。build 完了前に migrate を叩くと空振りし、**新コード稼働×列なし**の危険な窓ができる（今回発生 → 即補修。列存在・health 200・保護ルート 307/401・エラーログ0 を verified）。
+
+## ▶ 次の一手 — Phase 2: 作らない、売る
+コード側は売却価値に必要な基盤（課金台帳/解約表現/上限強制/セキュリティ）まで完了。**以降の価値はコードでなく課金顧客数**。
+1. **有料10件の獲得**（billingExempt=false かつ active を10件）。訪問数/成約時間（実CAC）・断り理由 Top3・刺さった一言を記録。
+2. この期間、**新機能は作らない**（要望は記録のみ）。
+3. 10件到達後: トライアル/督促メール（1〜2日）→ 指標ダッシュボード（0.5〜1日）→ セルフサーブ登録（2〜4日）。
+4. 撤退ライン: 3か月で10件未達なら「価格/対象業種/撤退」を再評価（機能追加では解決しない）。
+※ E2E は production build 前提（`npm run dev` 後は `npm run build` してから `test:e2e`）。
 
 ## ✅ 完了済みデモ動線（手動確認可）
 - `docker compose up -d` → `npm run db:seed` → `npm run dev`

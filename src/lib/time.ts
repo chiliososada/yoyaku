@@ -126,3 +126,13 @@ export function intervalsOverlap(aStart: Date, aEnd: Date, bStart: Date, bEnd: D
 export function todayInZone(timeZone: string = DEFAULT_TZ, now: Date = nowUtc()): string {
   return zonedDateString(now, timeZone);
 }
+
+/**
+ * 指定タイムゾーンの「当月1日 0:00」を UTC instant で返す。
+ * 例: JST の 2026-07-01 09:00(=UTC 00:00) に呼ぶと 2026-06-30T15:00:00Z（= JST 7/1 0:00）。
+ * 月次クォータ集計を UTC暦月ではなく店舗ローカル暦月で切るために使う。
+ */
+export function monthStartInZone(now: Date = nowUtc(), timeZone: string = DEFAULT_TZ): Date {
+  const ym = formatInTimeZone(now, timeZone, 'yyyy-MM');
+  return fromZonedTime(`${ym}-01T00:00:00`, timeZone);
+}

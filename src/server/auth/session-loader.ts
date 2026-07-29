@@ -50,6 +50,7 @@ export async function buildAuthContext(userId: string): Promise<AuthContext | nu
       id: true,
       tenantId: true,
       isPlatformAdmin: true,
+      sessionEpoch: true,
       memberships: {
         select: {
           shopId: true,
@@ -89,5 +90,6 @@ export async function buildAuthContext(userId: string): Promise<AuthContext | nu
     permissions: [...permissions],
     shopScopes: [...shopScopes],
     tenantWide,
+    sessionEpoch: user.sessionEpoch,
   };
 }

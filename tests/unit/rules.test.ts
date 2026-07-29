@@ -49,13 +49,21 @@ describe('rules: resolveBookingRules（スコープ統合）', () => {
 
 describe('rules: 受付期間 / 締切 / キャンセル期限', () => {
   it('受付期間内', () => {
-    expect(isWithinBookingWindow(addMin(now, 5 * 24 * 60), now, 30)).toBe(true);
+    expect(isWithinBookingWindow(addMin(now, 5 * 24 * 60), now, 30, 'Asia/Tokyo')).toBe(true);
   });
   it('受付期間外（30日超）', () => {
-    expect(isWithinBookingWindow(addMin(now, 40 * 24 * 60), now, 30)).toBe(false);
+    expect(isWithinBookingWindow(addMin(now, 40 * 24 * 60), now, 30, 'Asia/Tokyo')).toBe(false);
   });
   it('過去は受付不可', () => {
-    expect(isWithinBookingWindow(addMin(now, -60), now, 30)).toBe(false);
+    expect(isWithinBookingWindow(addMin(now, -60), now, 30, 'Asia/Tokyo')).toBe(false);
+  });
+  it('暦日差は店舗TZで数える（JST 深夜帯の境界）', () => {
+    // now = 2026-06-30T15:30Z = JST 7/1 00:30。開始 = 2026-07-31T00:30Z = JST 7/31 09:30。
+    // JST 暦日差は 30 日 → window=30 なら受付内。UTC 暦日で数えると 31 日で誤って弾く。
+    const jstNow = new Date('2026-06-30T15:30:00.000Z');
+    const startAt = new Date('2026-07-31T00:30:00.000Z');
+    expect(isWithinBookingWindow(startAt, jstNow, 30, 'Asia/Tokyo')).toBe(true);
+    expect(isWithinBookingWindow(startAt, jstNow, 30, 'UTC')).toBe(false);
   });
   it('lead time 満たす（3時間後, 締切2h）', () => {
     expect(satisfiesLeadTime(addMin(now, 180), now, 2)).toBe(true);

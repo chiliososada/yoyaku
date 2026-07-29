@@ -8,7 +8,9 @@ import './types';
 
 export const authConfig = {
   trustHost: true,
-  session: { strategy: 'jwt' },
+  // 30日は長すぎる。失効不能の JWT を短くして被害窓を縮める（サーバー側失効は
+  // getSessionUser の sessionEpoch 照合が担保する。これは多層防御）。
+  session: { strategy: 'jwt', maxAge: 7 * 24 * 60 * 60 },
   pages: { signIn: '/login' },
   providers: [],
   callbacks: {
@@ -20,6 +22,7 @@ export const authConfig = {
         token.permissions = user.permissions ?? [];
         token.shopScopes = user.shopScopes ?? [];
         token.tenantWide = user.tenantWide ?? false;
+        token.sessionEpoch = user.sessionEpoch ?? 0;
       }
       return token;
     },
@@ -32,6 +35,7 @@ export const authConfig = {
           permissions: string[];
           shopScopes: string[];
           tenantWide: boolean;
+          sessionEpoch?: number;
         };
         session.user.id = t.userId;
         session.user.tenantId = t.tenantId ?? null;
@@ -39,6 +43,7 @@ export const authConfig = {
         session.user.permissions = t.permissions ?? [];
         session.user.shopScopes = t.shopScopes ?? [];
         session.user.tenantWide = t.tenantWide ?? false;
+        session.user.sessionEpoch = t.sessionEpoch ?? 0;
       }
       return session;
     },

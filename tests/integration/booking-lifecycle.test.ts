@@ -146,7 +146,10 @@ describe('公開: トークンキャンセル', () => {
     });
     expect(reminder).toBeTruthy();
     expect(reminder!.status).toBe('PENDING');
-    expect(reminder!.scheduledAt.getTime()).toBe(slot.startAt.getTime() - 24 * 3600 * 1000);
+    // 前日リマインド。同一時刻への集中を避けるため 0〜30 分のジッターを引いている。
+    const lead = slot.startAt.getTime() - reminder!.scheduledAt.getTime();
+    expect(lead).toBeGreaterThanOrEqual(24 * 3600 * 1000);
+    expect(lead).toBeLessThanOrEqual(24 * 3600 * 1000 + 30 * 60 * 1000);
 
     await cancelBooking({ token: b.cancellationToken, now: NOW });
     const after = await prisma.notificationJob.findFirst({
