@@ -22,7 +22,12 @@ export default async function PlatformDashboard() {
     <div>
       <PageHeader title="ダッシュボード" description="プラットフォーム全体の概況" />
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
-        <StatCard label="商家数" value={stats.tenantCount} icon={Building2} sub={`有効 ${stats.activeTenants}`} />
+        <StatCard
+          label="商家数"
+          value={stats.tenantCount}
+          icon={Building2}
+          sub={`課金中 ${stats.payingTenants}／解約 ${stats.canceledTenants}`}
+        />
         <StatCard label="店舗数" value={stats.shopCount} icon={Store} />
         <StatCard label="ユーザー数" value={stats.userCount} icon={Users} />
         <StatCard label="総予約数" value={stats.bookingCount} icon={CalendarCheck} />

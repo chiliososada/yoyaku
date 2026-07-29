@@ -41,8 +41,8 @@ export function PlanForm({ planId, initial }: { planId: string; initial: PlanFor
         <Field label="スタッフ/店舗" error={errors.maxStaffPerShop?.message}>
           <Input type="number" min={1} {...register('maxStaffPerShop')} />
         </Field>
-        <Field label="予約/月" error={errors.maxBookingsPerMonth?.message}>
-          <Input type="number" min={1} {...register('maxBookingsPerMonth')} />
+        <Field label="予約/月" error={errors.maxBookingsPerMonth?.message} hint="0 = 無制限">
+          <Input type="number" min={0} {...register('maxBookingsPerMonth')} />
         </Field>
       </div>
       <Field

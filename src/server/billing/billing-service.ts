@@ -7,7 +7,8 @@
  * ロールアウト安全策: Stripe 未設定（キー無し）の間はゲートは常に許可＝完全休眠。
  * 既存テナントは migration で billingExempt=true にバックフィル済み。
  */
-import { prisma } from '@/lib/db';
+import { prisma, Prisma } from '@/lib/db';
+import type { BillingEventType } from '@prisma/client';
 import { env } from '@/lib/env';
 import { logger } from '@/lib/logger';
 import { nowUtc } from '@/lib/time';
@@ -40,6 +41,13 @@ export interface BillingGate {
 
 /** Stripe status のうち後台アクセスを許可するもの（past_due は督促中の猶予として許可）。 */
 const ALLOWED_SUB_STATUSES = new Set(['active', 'trialing', 'past_due']);
+
+/**
+ * 契約が完全に終了していて、新規申込をやり直してよい status。
+ * これ以外（NULL＝同期待ち / incomplete＝決済確定待ち を含む）で
+ * サブスクIDが残っている場合は、二本目を作らせない。
+ */
+const DEAD_SUB_STATUSES = new Set(['canceled', 'incomplete_expired']);
 
 /**
  * 商家後台のアクセス可否。純関数（テスト容易性のため設定・現在時刻は引数）。
@@ -92,15 +100,42 @@ export async function ensureStripeCustomer(tenantId: string, email?: string | nu
   return customer.id;
 }
 
+/**
+ * ローカルトライアルの残日数（切り上げ）。Stripe へ引き継ぐ用。
+ * 期限切れ・未設定なら 0（＝即時課金）。純関数（テスト容易性のため now を引数）。
+ */
+export function remainingTrialDays(trialEndsAt: Date | null, now: Date): number {
+  if (!trialEndsAt) return 0;
+  const ms = trialEndsAt.getTime() - now.getTime();
+  return ms <= 0 ? 0 : Math.ceil(ms / 86_400_000);
+}
+
 /** プラン申込の Checkout URL を発行。 */
 export async function startCheckout(tenantId: string, planId: string, email?: string | null): Promise<string> {
-  // 既契約の二重申込（二重課金）を防止
+  // 二重申込（＝二重課金）の防止。
+  //
+  // status だけを見ると穴がある: この列を書くのは Webhook だけで、Checkout 完了から
+  // customer.subscription.* が届くまで（Webhook 障害時は永久に）NULL のままになる。
+  // その間に商家が「申し込む」をもう一度押すと Stripe は二本目の契約を作り、
+  // テナント行は最後の1本しか保持しないため、一本目は誰にも気づかれず毎月課金され続ける。
+  // そこで「サブスクIDが既にある」ことも拒否条件に含める。
+  // 解約後の再契約は status='canceled' になるので、この条件をすり抜けて正しく通る。
   const current = await prisma.tenant.findUnique({
     where: { id: tenantId },
-    select: { stripeSubscriptionStatus: true },
+    select: { stripeSubscriptionId: true, stripeSubscriptionStatus: true, trialEndsAt: true },
   });
   if (current?.stripeSubscriptionStatus && ALLOWED_SUB_STATUSES.has(current.stripeSubscriptionStatus)) {
     throw Errors.conflict('CONFLICT', '既にご契約中です。プラン変更・解約は「お支払い方法・解約の管理」から行えます。');
+  }
+  // サブスクIDが既にあり、かつ「完全に終了した」状態でないなら申込を止める。
+  // status が NULL（同期待ち）でも 'incomplete'（決済確定待ち）でも二本目は作らせない。
+  // 二重課金は取り返しがつかないが、一時的に申し込めないのは運営が Stripe 側で解消できる。
+  if (current?.stripeSubscriptionId && !DEAD_SUB_STATUSES.has(current.stripeSubscriptionStatus ?? '')) {
+    throw Errors.conflict(
+      'CONFLICT',
+      'お申し込みを処理中です。数十秒お待ちいただき、ページを再読み込みしてください。' +
+        '重複してお申し込みいただく必要はありません（表示が変わらない場合はサポートへご連絡ください）。',
+    );
   }
   const plan = await prisma.plan.findUnique({
     where: { id: planId },
@@ -111,12 +146,15 @@ export async function startCheckout(tenantId: string, planId: string, email?: st
   }
   const customerId = await ensureStripeCustomer(tenantId, email);
   const base = env.APP_BASE_URL;
+  // トライアル途中での申込でも残り日数を失わせない（Stripe 側にも同じ猶予を設定）
+  const trialPeriodDays = remainingTrialDays(current?.trialEndsAt ?? null, nowUtc());
   const session = await createCheckoutSession({
     customerId,
     priceId: plan.stripePriceId,
     tenantId,
     successUrl: `${base}/admin/billing?checkout=success`,
     cancelUrl: `${base}/admin/billing?checkout=canceled`,
+    trialPeriodDays,
   });
   return session.url;
 }
@@ -133,6 +171,79 @@ export async function openPortal(tenantId: string): Promise<string> {
     returnUrl: `${env.APP_BASE_URL}/admin/billing`,
   });
   return session.url;
+}
+
+// ---------------------------------------------------------------------------
+// 課金イベント台帳（追記専用）
+// ---------------------------------------------------------------------------
+
+/**
+ * 課金イベントを台帳へ追記。**この関数以外から billing_events を書かないこと。**
+ *
+ * - 金額・プラン名は「発生時点のスナップショット」。後から Plan.priceJpy を改定しても
+ *   過去の MRR が書き換わらないようにするのが目的。
+ * - stripeEventId で冪等。Webhook 再送で二重計上しない（P2002 は握りつぶす）。
+ * - 記録失敗が課金同期そのものを壊さないよう、例外は投げずログのみ（台帳はベストエフォート）。
+ */
+async function recordBillingEvent(input: {
+  tenantId: string;
+  type: BillingEventType;
+  planId?: string | null;
+  amountJpy?: number | null;
+  fromStatus?: string | null;
+  toStatus?: string | null;
+  stripeEventId?: string | null;
+  stripeSubscriptionId?: string | null;
+  stripeInvoiceId?: string | null;
+  occurredAt: Date;
+}): Promise<void> {
+  try {
+    // プランは「その時の姿」を保存（参照だと改名・削除で過去が変わる）
+    let planCode: string | null = null;
+    let planName: string | null = null;
+    let amount = input.amountJpy ?? null;
+    if (input.planId) {
+      const plan = await prisma.plan.findUnique({
+        where: { id: input.planId },
+        select: { code: true, name: true, priceJpy: true },
+      });
+      if (plan) {
+        planCode = plan.code;
+        planName = plan.name;
+        if (amount == null) amount = plan.priceJpy;
+      }
+    }
+    await prisma.billingEvent.create({
+      data: {
+        tenantId: input.tenantId,
+        type: input.type,
+        planId: input.planId ?? null,
+        planCode,
+        planName,
+        amountJpy: amount,
+        fromStatus: input.fromStatus ?? null,
+        toStatus: input.toStatus ?? null,
+        stripeEventId: input.stripeEventId ?? null,
+        stripeSubscriptionId: input.stripeSubscriptionId ?? null,
+        stripeInvoiceId: input.stripeInvoiceId ?? null,
+        occurredAt: input.occurredAt,
+      },
+    });
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      // 同一 Stripe イベントの再送 → 既に記録済み。正常。
+      return;
+    }
+    logger.error(
+      { tenantId: input.tenantId, type: input.type, err: e instanceof Error ? e.message : String(e) },
+      '[billing] failed to record billing event (ledger write is best-effort)',
+    );
+  }
+}
+
+/** 新規テナントのトライアル開始を台帳に記録（コホート分析の起点）。 */
+export async function recordTrialStarted(tenantId: string, planId: string | null, at: Date): Promise<void> {
+  await recordBillingEvent({ tenantId, type: 'TRIAL_STARTED', planId, occurredAt: at });
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +280,7 @@ type TenantBillingRow = {
   stripeSubscriptionId: string | null;
   stripeSubscriptionStatus: string | null;
   lastStripeEventAt: Date | null;
+  planId: string | null;
 };
 
 const TENANT_BILLING_SELECT = {
@@ -176,6 +288,7 @@ const TENANT_BILLING_SELECT = {
   stripeSubscriptionId: true,
   stripeSubscriptionStatus: true,
   lastStripeEventAt: true,
+  planId: true,
 } as const;
 
 async function findTenantForSubscription(sub: StripeSubscriptionObject): Promise<TenantBillingRow | null> {
@@ -200,10 +313,36 @@ function isStaleEvent(tenant: TenantBillingRow, eventAtMs: number | null): boole
   return Boolean(eventAtMs && tenant.lastStripeEventAt && eventAtMs < tenant.lastStripeEventAt.getTime());
 }
 
+/**
+ * 「同じ秒」に届いたイベントによる状態の後退を防ぐ。
+ *
+ * Stripe の event.created は秒精度しかないため、subscription.created(incomplete) と
+ * 直後の subscription.updated(active) が同一秒になることが実際にある。順序保証も無い。
+ * isStaleEvent は strict `<` なので同秒イベントは素通りし、incomplete が後にコミットすると
+ * 「支払い済みなのに LOCKED」という最悪の状態になる。
+ * そこで、同秒以前のイベントがアクセス可能状態から不可状態へ引き戻す場合だけ拒否する。
+ * （前進方向・厳密に新しいイベントは常に適用する）
+ */
+function isRegressiveSameSecondEvent(
+  tenant: TenantBillingRow,
+  eventAtMs: number | null,
+  nextStatus: string,
+): boolean {
+  if (!eventAtMs || !tenant.lastStripeEventAt) return false;
+  if (eventAtMs > tenant.lastStripeEventAt.getTime()) return false; // 厳密に新しい → 適用
+  const currentlyAllowed = Boolean(
+    tenant.stripeSubscriptionStatus && ALLOWED_SUB_STATUSES.has(tenant.stripeSubscriptionStatus),
+  );
+  const nextAllowed = ALLOWED_SUB_STATUSES.has(nextStatus);
+  return currentlyAllowed && !nextAllowed;
+}
+
 async function syncSubscription(
   sub: StripeSubscriptionObject,
   deleted: boolean,
   eventAtMs: number | null,
+  stripeEventId?: string | null,
+  isCreateEvent = false,
 ): Promise<void> {
   const tenant = await findTenantForSubscription(sub);
   if (!tenant) {
@@ -226,12 +365,32 @@ async function syncSubscription(
   }
 
   const status = deleted ? 'canceled' : sub.status;
+
+  // 順序ガード③: 同一秒に届いたイベントで「利用可 → 利用不可」へ後退させない。
+  // （created:incomplete と updated:active が同秒になり、incomplete が後勝ちすると
+  //   支払い済みの商家がロックアウトされる。解約 deleted は上のガード②で別途担保済み）
+  if (!deleted && isRegressiveSameSecondEvent(tenant, eventAtMs, status)) {
+    logger.info(
+      { tenantId: tenant.id, subscriptionId: sub.id, from: tenant.stripeSubscriptionStatus, to: status },
+      '[billing] same-second regressive event skipped (would lock out a paying tenant)',
+    );
+    return;
+  }
+
   const priceId = sub.items?.data?.[0]?.price?.id ?? null;
   const plan = priceId
     ? await prisma.plan.findFirst({ where: { stripePriceId: priceId }, select: { id: true } })
     : null;
   // 期間終了は API バージョンにより top-level または items 側（2025-03 Basil 以降）
   const periodEnd = sub.current_period_end ?? sub.items?.data?.[0]?.current_period_end ?? null;
+
+  // 解約/復活をテナント状態にも反映する。これが無いと tenant.status は作成時 ACTIVE のまま
+  // 一度も遷移せず、解約率が集計不能になる（認証には使われていないため副作用は無い）。
+  const tenantStatus: 'ACTIVE' | 'CANCELLED' | undefined = deleted
+    ? 'CANCELLED'
+    : ALLOWED_SUB_STATUSES.has(status)
+      ? 'ACTIVE'
+      : undefined;
 
   await prisma.tenant.update({
     where: { id: tenant.id },
@@ -241,15 +400,22 @@ async function syncSubscription(
       stripeSubscriptionStatus: status,
       currentPeriodEnd: periodEnd ? new Date(periodEnd * 1000) : null,
       ...(plan ? { planId: plan.id } : {}),
+      ...(tenantStatus ? { status: tenantStatus } : {}),
       ...(eventAtMs ? { lastStripeEventAt: new Date(eventAtMs) } : {}),
     },
   });
 
-  // 契約履歴（Subscription）を externalRef=サブスクID（unique）で upsert
+  // 契約履歴（Subscription）を externalRef=サブスクID（unique）で upsert。
+  // これは「現在状態」のスナップショット。履歴そのものは billing_events 側が持つ。
   if (plan) {
     await prisma.subscription.upsert({
       where: { externalRef: sub.id },
-      update: { status: toHistoryStatus(status), ...(deleted ? { expiresAt: nowUtc() } : {}) },
+      update: {
+        status: toHistoryStatus(status),
+        // アップグレードでプランが変わった場合に履歴行が旧プランのまま取り残されるのを防ぐ
+        planId: plan.id,
+        ...(deleted ? { expiresAt: nowUtc() } : {}),
+      },
       create: {
         tenantId: tenant.id,
         planId: plan.id,
@@ -259,6 +425,31 @@ async function syncSubscription(
       },
     });
   }
+
+  // 追記専用の台帳へ。状態遷移・プラン変更を分類して残す（MRR/解約率の一次情報）。
+  // 分類の権威は Stripe のイベント種別（created/updated/deleted）。
+  // tenant.stripeSubscriptionStatus は checkout.session.completed が先に 'incomplete' を
+  // 立てるため「初回か否か」の判定には使えず、trial の planId 差で planChanged が誤発火して
+  // 初回契約が PLAN_CHANGED/UPDATED に化けていた。created イベントは定義上つねに新規契約。
+  const planChanged = Boolean(plan && tenant.planId && plan.id !== tenant.planId);
+  const eventType: BillingEventType = deleted
+    ? 'SUBSCRIPTION_CANCELED'
+    : isCreateEvent
+      ? 'SUBSCRIPTION_CREATED'
+      : planChanged
+        ? 'PLAN_CHANGED'
+        : 'SUBSCRIPTION_UPDATED';
+  await recordBillingEvent({
+    tenantId: tenant.id,
+    type: eventType,
+    planId: plan?.id ?? tenant.planId,
+    fromStatus: tenant.stripeSubscriptionStatus,
+    toStatus: status,
+    stripeEventId: stripeEventId ?? null,
+    stripeSubscriptionId: sub.id,
+    occurredAt: eventAtMs ? new Date(eventAtMs) : nowUtc(),
+  });
+
   logger.info({ tenantId: tenant.id, subscriptionId: sub.id, status }, '[billing] subscription synced');
 }
 
@@ -289,6 +480,11 @@ export async function processStripeEvent(event: StripeEvent): Promise<void> {
       const tenantId = s.metadata?.tenantId;
       if (!tenantId || !s.customer) return;
       // updateMany: テナントが消えていても throw せず無視（500 → Stripe の数日リトライを避ける）
+      //
+      // subscription.* が届く前でも二重申込ガードが効くよう、ここで暫定の状態も入れる。
+      // 値は Checkout 完了時点の実態に最も近い 'incomplete'（＝まだ課金確定ではない）。
+      // 直後に来る subscription.created/updated が正しい状態で上書きする。
+      // 既に状態が入っている場合は触らない（後続イベントを巻き戻さないため）。
       await prisma.tenant.updateMany({
         where: { id: tenantId },
         data: {
@@ -296,18 +492,58 @@ export async function processStripeEvent(event: StripeEvent): Promise<void> {
           ...(s.subscription ? { stripeSubscriptionId: s.subscription } : {}),
         },
       });
+      if (s.subscription) {
+        await prisma.tenant.updateMany({
+          where: { id: tenantId, stripeSubscriptionStatus: null },
+          data: { stripeSubscriptionStatus: 'incomplete' },
+        });
+      }
       logger.info({ tenantId, customer: s.customer }, '[billing] checkout completed');
       return;
     }
     case 'customer.subscription.created':
+      await syncSubscription(event.data.object as unknown as StripeSubscriptionObject, false, eventAtMs, event.id, true);
+      return;
     case 'customer.subscription.updated':
-      await syncSubscription(event.data.object as unknown as StripeSubscriptionObject, false, eventAtMs);
+      await syncSubscription(event.data.object as unknown as StripeSubscriptionObject, false, eventAtMs, event.id, false);
       return;
     case 'customer.subscription.deleted':
-      await syncSubscription(event.data.object as unknown as StripeSubscriptionObject, true, eventAtMs);
+      await syncSubscription(event.data.object as unknown as StripeSubscriptionObject, true, eventAtMs, event.id);
       return;
+    case 'invoice.paid':
+    case 'invoice.payment_succeeded': {
+      // 実際に入金された金額の記録。契約状態は変えない（状態は subscription.* が正）。
+      // これが無いと「請求したはず」しか残らず、実収の証跡が DB に一切残らない。
+      const inv = event.data.object as {
+        id?: string;
+        customer?: string;
+        subscription?: string;
+        amount_paid?: number;
+        currency?: string;
+      };
+      if (!inv.customer) return;
+      const tenant = await prisma.tenant.findUnique({
+        where: { stripeCustomerId: inv.customer },
+        select: TENANT_BILLING_SELECT,
+      });
+      if (!tenant) return;
+      await recordBillingEvent({
+        tenantId: tenant.id,
+        type: 'PAYMENT_SUCCEEDED',
+        planId: tenant.planId,
+        // Stripe の amount_paid は最小通貨単位。JPY は 0 桁通貨なのでそのまま円。
+        amountJpy: typeof inv.amount_paid === 'number' ? inv.amount_paid : null,
+        toStatus: tenant.stripeSubscriptionStatus,
+        stripeEventId: event.id ?? null,
+        stripeSubscriptionId: inv.subscription ?? tenant.stripeSubscriptionId,
+        stripeInvoiceId: inv.id ?? null,
+        occurredAt: eventAtMs ? new Date(eventAtMs) : nowUtc(),
+      });
+      logger.info({ tenantId: tenant.id, amount: inv.amount_paid }, '[billing] payment succeeded');
+      return;
+    }
     case 'invoice.payment_failed': {
-      const inv = event.data.object as { customer?: string };
+      const inv = event.data.object as { id?: string; customer?: string; subscription?: string };
       if (!inv.customer) return;
       const tenant = await prisma.tenant.findUnique({
         where: { stripeCustomerId: inv.customer },
@@ -326,6 +562,17 @@ export async function processStripeEvent(event: StripeEvent): Promise<void> {
           stripeSubscriptionStatus: 'past_due',
           ...(eventAtMs ? { lastStripeEventAt: new Date(eventAtMs) } : {}),
         },
+      });
+      await recordBillingEvent({
+        tenantId: tenant.id,
+        type: 'PAYMENT_FAILED',
+        planId: tenant.planId,
+        fromStatus: tenant.stripeSubscriptionStatus,
+        toStatus: 'past_due',
+        stripeEventId: event.id ?? null,
+        stripeSubscriptionId: inv.subscription ?? tenant.stripeSubscriptionId,
+        stripeInvoiceId: inv.id ?? null,
+        occurredAt: eventAtMs ? new Date(eventAtMs) : nowUtc(),
       });
       logger.warn({ tenantId: tenant.id }, '[billing] invoice payment failed → past_due');
       return;

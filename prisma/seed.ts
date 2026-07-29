@@ -94,9 +94,20 @@ async function seedPermissionsAndRoles() {
 async function seedPlans() {
   console.log('· 料金プランを投入...');
   const plans = [
-    { code: 'FREE', name: 'フリー', priceJpy: 0, maxShops: 1, maxStaffPerShop: 3, maxBookingsPerMonth: 100, sortOrder: 0 },
-    { code: 'STANDARD', name: 'スタンダード', priceJpy: 9800, maxShops: 3, maxStaffPerShop: 15, maxBookingsPerMonth: 3000, sortOrder: 1 },
-    { code: 'PRO', name: 'プロ', priceJpy: 29800, maxShops: 20, maxStaffPerShop: 100, maxBookingsPerMonth: 50000, sortOrder: 2 },
+    // maxBookingsPerMonth: 0 = 無制限。有料プランで予約件数に上限を設けると
+    // (a) 「予約件数 無制限」という販促表示と矛盾し、(b) 上限超過時に顧客の予約を止めて
+    // 商家の営業損失を招く。有料プランの差別化は店舗数・スタッフ数で行い、
+    // 件数上限はフリープランの転換動線としてのみ使う。
+    // フリーは isActive=false（実体の無いプランだったため無効化）。
+    // 課金ゲート evaluateBillingAccess はプランを一切参照せず、
+    // 「Stripe契約が無い && トライアル切れ」を一律 LOCKED として扱う。
+    // つまり FREE を割り当てても 30 日後にロックされ、無料枠として機能しない。
+    // 販促面でも謳っているのは「30日間無料トライアル」であって無料プランではない。
+    // 将来セルフサーブ登録を作って PLG 導線が要るようになったら、
+    // ゲート側に「priceJpy=0 のプランなら許可」を足したうえで再有効化すること。
+    { code: 'FREE', name: 'フリー', priceJpy: 0, maxShops: 1, maxStaffPerShop: 3, maxBookingsPerMonth: 100, sortOrder: 0, isActive: false },
+    { code: 'STANDARD', name: 'スタンダード', priceJpy: 9800, maxShops: 3, maxStaffPerShop: 15, maxBookingsPerMonth: 0, sortOrder: 1 },
+    { code: 'PRO', name: 'プロ', priceJpy: 29800, maxShops: 20, maxStaffPerShop: 100, maxBookingsPerMonth: 0, sortOrder: 2 },
   ];
   for (const p of plans) {
     await prisma.plan.upsert({ where: { code: p.code }, update: p, create: p });
@@ -176,6 +187,25 @@ async function seedDemoTenant() {
       publicBookingEnabled: true,
       closeOnNationalHolidays: true,
       settings: { shopCapacity: 3 },
+    },
+  });
+
+  // 専属ホームページ（SEO公開ページ）のサンプル。地推デモ用に公開ONで投入。
+  await prisma.shopProfile.create({
+    data: {
+      shopId: shop.id,
+      tenantId: tenant.id,
+      tagline: '髪から、あなたらしく。',
+      about:
+        '渋谷駅から徒歩5分。カット・カラー・ヘッドスパを一人ひとりに合わせてご提案する総合サロンです。\n経験豊富なスタイリストが、あなたのなりたいイメージを丁寧にカウンセリング。初めての方も、お気軽にご相談ください。',
+      businessType: 'HairSalon',
+      accessNote: 'JR渋谷駅ハチ公口より徒歩5分／提携駐車場あり',
+      themeColor: '#7c3aed',
+      instagramUrl: 'https://instagram.com/',
+      homepageEnabled: true,
+      showMenu: true,
+      showStaff: true,
+      showGallery: true,
     },
   });
 

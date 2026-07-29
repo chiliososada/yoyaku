@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 
-export const metadata: Metadata = { title: 'プライバシーポリシー | Yoyaku' };
+export const metadata: Metadata = { title: 'プライバシーポリシー' };
 
 export default function PrivacyPage() {
   return (

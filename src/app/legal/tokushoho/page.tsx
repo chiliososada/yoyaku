@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 
-export const metadata: Metadata = { title: '特定商取引法に基づく表記 | Yoyaku' };
+export const metadata: Metadata = { title: '特定商取引法に基づく表記' };
 
 const ROWS: Array<[string, React.ReactNode]> = [
   ['販売事業者', 'マイアークス株式会社'],

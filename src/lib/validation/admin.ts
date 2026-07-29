@@ -2,6 +2,7 @@
  * 管理画面の書込 Zod スキーマ。client(RHF) と server action の双方で使用。
  */
 import { z } from 'zod';
+import { isReservedSlug } from '@/lib/shop-slug';
 
 const optionalString = z.string().trim().max(200).optional().or(z.literal(''));
 
@@ -84,7 +85,8 @@ export const shopCreateSchema = z.object({
     .trim()
     .regex(/^[a-z0-9-]+$/, '英小文字・数字・ハイフンのみ')
     .min(2)
-    .max(50),
+    .max(50)
+    .refine((s) => !isReservedSlug(s), 'この名前は使用できません。別の名前をお選びください。'),
   timezone: z.string().default('Asia/Tokyo'),
 });
 export type ShopCreateInput = z.infer<typeof shopCreateSchema>;
@@ -105,6 +107,61 @@ export const shopSettingsSchema = z.object({
   shopCapacity: z.coerce.number().int().min(1).max(1000).default(1),
 });
 export type ShopSettingsInput = z.infer<typeof shopSettingsSchema>;
+
+// ---- 店舗ホームページ（専属HP・SEO公開ページ） ----
+/** JSON-LD 用のビジネス種別（schema.org 準拠の型のみ）。 */
+export const HP_BUSINESS_TYPES = ['HairSalon', 'BeautySalon', 'NailSalon', 'DaySpa', 'HealthAndBeautyBusiness'] as const;
+export type HpBusinessType = (typeof HP_BUSINESS_TYPES)[number];
+export const HP_BUSINESS_TYPE_LABELS: Record<HpBusinessType, string> = {
+  HairSalon: '美容室・ヘアサロン',
+  BeautySalon: 'エステ・ビューティーサロン',
+  NailSalon: 'ネイルサロン',
+  DaySpa: 'スパ・リラクゼーション',
+  HealthAndBeautyBusiness: 'その他（美容・健康）',
+};
+
+const uploadKey = z
+  .string()
+  .trim()
+  .regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*\.webp$/, '不正な画像キーです。')
+  .max(128);
+/// http(s) のみ許可（javascript: 等のスキームによる stored XSS を遮断）
+const hpUrl = z
+  .string()
+  .trim()
+  .url('URL形式で入力してください。')
+  .regex(/^https?:\/\//i, 'http:// または https:// のURLのみ使用できます。')
+  .max(300)
+  .optional()
+  .or(z.literal(''));
+
+export const shopHomepageSchema = z.object({
+  tagline: z.string().trim().max(80).optional().or(z.literal('')),
+  about: z.string().trim().max(2000).optional().or(z.literal('')),
+  businessType: z.enum(HP_BUSINESS_TYPES).default('HealthAndBeautyBusiness'),
+  accessNote: z.string().trim().max(500).optional().or(z.literal('')),
+  themeColor: z
+    .string()
+    .trim()
+    .regex(/^#[0-9a-fA-F]{6}$/, '#RRGGBB 形式で入力してください。')
+    .optional()
+    .or(z.literal('')),
+  instagramUrl: hpUrl,
+  lineUrl: hpUrl,
+  xUrl: hpUrl,
+  websiteUrl: hpUrl,
+  homepageEnabled: z.boolean().default(false),
+  showMenu: z.boolean().default(true),
+  showStaff: z.boolean().default(true),
+  showGallery: z.boolean().default(true),
+  showAddress: z.boolean().default(true),
+  seoTitle: z.string().trim().max(70).optional().or(z.literal('')),
+  seoDescription: z.string().trim().max(160).optional().or(z.literal('')),
+  heroImageKey: uploadKey.optional().or(z.literal('')),
+  logoImageKey: uploadKey.optional().or(z.literal('')),
+  gallery: z.array(uploadKey).max(12).default([]),
+});
+export type ShopHomepageInput = z.infer<typeof shopHomepageSchema>;
 
 // ---- 特別営業日 ----
 export const specialDaySchema = z

@@ -7,16 +7,25 @@ import { nowUtc } from '@/lib/time';
 export async function getPlatformStats() {
   const now = nowUtc();
   const dayAgo = new Date(now.getTime() - 24 * 3600 * 1000);
-  const [tenantCount, shopCount, userCount, bookingCount, recentBookings, activeTenants] =
+  const [tenantCount, shopCount, userCount, bookingCount, recentBookings, payingTenants, canceledTenants] =
     await Promise.all([
       prisma.tenant.count({ where: { deletedAt: null } }),
       prisma.shop.count({ where: { deletedAt: null } }),
       prisma.user.count({ where: { deletedAt: null } }),
       prisma.booking.count({ where: { deletedAt: null } }),
       prisma.booking.count({ where: { createdAt: { gte: dayAgo } } }),
-      prisma.tenant.count({ where: { status: 'ACTIVE', deletedAt: null } }),
+      // 「実際に課金されている商家」。旧実装は tenant.status='ACTIVE' を数えていたが、
+      // この列は作成時に書かれたきり遷移しないため常に総数と一致し、意味を成さなかった。
+      prisma.tenant.count({
+        where: {
+          deletedAt: null,
+          billingExempt: false,
+          stripeSubscriptionStatus: { in: ['active', 'trialing', 'past_due'] },
+        },
+      }),
+      prisma.tenant.count({ where: { deletedAt: null, status: 'CANCELLED' } }),
     ]);
-  return { tenantCount, shopCount, userCount, bookingCount, recentBookings, activeTenants };
+  return { tenantCount, shopCount, userCount, bookingCount, recentBookings, payingTenants, canceledTenants };
 }
 
 export async function listTenants() {

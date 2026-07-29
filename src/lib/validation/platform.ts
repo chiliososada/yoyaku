@@ -2,13 +2,15 @@
  * プラットフォーム後台の書込 Zod スキーマ。
  */
 import { z } from 'zod';
+import { isReservedSlug } from '@/lib/shop-slug';
 
 const slug = z
   .string()
   .trim()
   .regex(/^[a-z0-9-]+$/, '英小文字・数字・ハイフンのみ')
   .min(2)
-  .max(50);
+  .max(50)
+  .refine((s) => !isReservedSlug(s), 'この名前は使用できません。別の名前をお選びください。');
 
 export const createTenantSchema = z.object({
   tenantName: z.string().trim().min(1, '商家名を入力してください。').max(100),
@@ -31,7 +33,8 @@ export const planFormSchema = z.object({
   priceJpy: z.coerce.number().int().min(0).max(10_000_000),
   maxShops: z.coerce.number().int().min(1).max(1000),
   maxStaffPerShop: z.coerce.number().int().min(1).max(1000),
-  maxBookingsPerMonth: z.coerce.number().int().min(1).max(10_000_000),
+  /// 0 = 無制限。有料プランは 0 を使う（件数で顧客の予約を止めないため）
+  maxBookingsPerMonth: z.coerce.number().int().min(0).max(10_000_000),
   /// Stripe Price ID（price_...）。設定するとオンライン申込（Checkout）対象になる
   stripePriceId: z
     .string()

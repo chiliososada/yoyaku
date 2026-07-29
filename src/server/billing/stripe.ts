@@ -33,13 +33,19 @@ export function toFormBody(params: Record<string, unknown>, prefix = ''): string
   return parts;
 }
 
-async function stripePost<T>(path: string, params: Record<string, unknown>): Promise<T> {
+async function stripePost<T>(
+  path: string,
+  params: Record<string, unknown>,
+  idempotencyKey?: string,
+): Promise<T> {
   if (!isStripeConfigured()) throw Errors.conflict('STRIPE_NOT_CONFIGURED', '決済機能は準備中です。');
   const res = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${env.STRIPE_SECRET_KEY}`,
       'Content-Type': 'application/x-www-form-urlencoded',
+      // 同一キーの再送は Stripe 側で最初の結果を返す＝オブジェクトが二重に作られない
+      ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
     },
     body: toFormBody(params).join('&'),
   });
@@ -64,24 +70,51 @@ export async function createStripeCustomer(input: {
   });
 }
 
-/** サブスクリプション Checkout セッションを作成し URL を返す。 */
+/** Stripe が受け付けるトライアル日数の範囲（1〜730日）。 */
+const STRIPE_TRIAL_MIN_DAYS = 1;
+const STRIPE_TRIAL_MAX_DAYS = 730;
+
+/**
+ * サブスクリプション Checkout セッションを作成し URL を返す。
+ *
+ * trialPeriodDays を渡すと Stripe 側でもトライアルが継続する。渡さないと
+ * 「ローカル30日トライアルの3日目に申し込んだ商家が即時課金され、残り27日を失う」
+ * という顧客不利益が起きるため、呼び出し側で必ず残日数を計算して渡すこと。
+ */
 export async function createCheckoutSession(input: {
   customerId: string;
   priceId: string;
   tenantId: string;
   successUrl: string;
   cancelUrl: string;
+  trialPeriodDays?: number | null;
 }): Promise<{ id: string; url: string }> {
-  return stripePost<{ id: string; url: string }>('/checkout/sessions', {
-    mode: 'subscription',
-    customer: input.customerId,
-    line_items: [{ price: input.priceId, quantity: 1 }],
-    success_url: input.successUrl,
-    cancel_url: input.cancelUrl,
-    allow_promotion_codes: 'true',
-    metadata: { tenantId: input.tenantId },
-    subscription_data: { metadata: { tenantId: input.tenantId } },
-  });
+  const trialDays =
+    input.trialPeriodDays != null && Number.isFinite(input.trialPeriodDays)
+      ? Math.min(STRIPE_TRIAL_MAX_DAYS, Math.floor(input.trialPeriodDays))
+      : null;
+  const subscriptionData: Record<string, unknown> = { metadata: { tenantId: input.tenantId } };
+  if (trialDays != null && trialDays >= STRIPE_TRIAL_MIN_DAYS) {
+    subscriptionData.trial_period_days = trialDays;
+  }
+  // 連打・二重送信の最終防衛線。テナント×プラン×時間バケット(10分)で冪等化する。
+  // 時間バケットを入れるのは、後日ほんとうに再申込したい場合に永久ブロックしないため。
+  const bucket = Math.floor(Date.now() / (10 * 60_000));
+  const idempotencyKey = `checkout:${input.tenantId}:${input.priceId}:${bucket}`;
+  return stripePost<{ id: string; url: string }>(
+    '/checkout/sessions',
+    {
+      mode: 'subscription',
+      customer: input.customerId,
+      line_items: [{ price: input.priceId, quantity: 1 }],
+      success_url: input.successUrl,
+      cancel_url: input.cancelUrl,
+      allow_promotion_codes: 'true',
+      metadata: { tenantId: input.tenantId },
+      subscription_data: subscriptionData,
+    },
+    idempotencyKey,
+  );
 }
 
 /** Billing Portal（カード変更・請求書・解約）のセッション URL。 */

@@ -35,6 +35,8 @@ interface Props {
   planPriceJpy: number | null;
   plans: PlanCard[];
   checkoutResult: string | null;
+  /** 当月のオンライン予約利用状況（プラン上限に対する使用量） */
+  quota?: { used: number; limit: number; planName: string };
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -81,8 +83,11 @@ export function BillingPanel(props: Props) {
     });
   };
 
+  // Checkout から戻った直後はプランカードを出さない。
+  // Webhook 同期の前は state が TRIAL/LOCKED のままなので、カードを出すと
+  //「決済したのに変わらない → もう一度申し込む」を誘発し、契約が二本になる。
   const showPlans =
-    props.canManage && (props.state === 'TRIAL' || props.state === 'LOCKED');
+    props.canManage && props.checkoutResult !== 'success' && (props.state === 'TRIAL' || props.state === 'LOCKED');
 
   return (
     <div className="grid gap-5">
@@ -203,6 +208,11 @@ export function BillingPanel(props: Props) {
         </div>
       )}
 
+      {/* 当月のオンライン予約利用状況（上限に近づいたら事前に気づけるように） */}
+      {props.quota && props.quota.limit > 0 && props.state !== 'EXEMPT' && props.state !== 'DORMANT' && (
+        <QuotaMeter used={props.quota.used} limit={props.quota.limit} planName={props.quota.planName} />
+      )}
+
       {/* プラン一覧（申込） */}
       {showPlans && (
         <div className="grid gap-3">
@@ -240,6 +250,44 @@ export function BillingPanel(props: Props) {
             お支払いは Stripe の安全な決済ページで行われます。カード情報が当システムに保存されることはありません。
           </p>
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 当月のオンライン予約件数 / プラン上限。
+ * 上限に達してから知るのでは遅いため、80% を超えた時点で警告色に変える。
+ */
+function QuotaMeter({ used, limit, planName }: { used: number; limit: number; planName: string }) {
+  const ratio = limit > 0 ? used / limit : 0;
+  const pct = Math.min(100, Math.round(ratio * 100));
+  const level = ratio >= 1 ? 'over' : ratio >= 0.8 ? 'warn' : 'ok';
+  const barColor = level === 'over' ? 'bg-destructive' : level === 'warn' ? 'bg-amber-500' : 'bg-primary';
+  const border =
+    level === 'over' ? 'border-destructive/30 bg-destructive/5' : level === 'warn' ? 'border-amber-200 bg-amber-50' : '';
+
+  return (
+    <div className={`rounded-xl border p-4 ${border}`}>
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <span className="text-sm font-medium">今月のオンライン予約</span>
+        <span className="text-sm text-muted-foreground">
+          <span className="font-semibold text-foreground">{used.toLocaleString()}</span> / {limit.toLocaleString()} 件
+          <span className="ml-2 text-xs">（{planName}）</span>
+        </span>
+      </div>
+      <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-muted">
+        <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${pct}%` }} />
+      </div>
+      {level === 'warn' && (
+        <p className="mt-2 text-xs text-amber-800">
+          上限に近づいています。超過するとオンライン予約の受付を停止する場合があります（店舗側からの登録は制限されません）。
+        </p>
+      )}
+      {level === 'over' && (
+        <p className="mt-2 text-xs text-destructive">
+          今月の上限を超えています。上位プランへの変更をご検討ください。店舗側からの予約登録は引き続きご利用いただけます。
+        </p>
       )}
     </div>
   );

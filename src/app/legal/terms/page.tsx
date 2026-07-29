@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 
-export const metadata: Metadata = { title: '利用規約 | Yoyaku' };
+export const metadata: Metadata = { title: '利用規約' };
 
 export default function TermsPage() {
   return (

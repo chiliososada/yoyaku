@@ -39,7 +39,9 @@ export default async function PlansPage() {
                 <Td className="text-right tabular-nums">{formatJpy(p.priceJpy)}</Td>
                 <Td className="text-right tabular-nums">{p.maxShops}</Td>
                 <Td className="text-right tabular-nums">{p.maxStaffPerShop}</Td>
-                <Td className="text-right tabular-nums">{p.maxBookingsPerMonth.toLocaleString()}</Td>
+                <Td className="text-right tabular-nums">
+                  {p.maxBookingsPerMonth === 0 ? '無制限' : p.maxBookingsPerMonth.toLocaleString()}
+                </Td>
                 <Td className="text-right tabular-nums">{p._count.tenants}</Td>
                 <Td>
                   <StatusPill status={p.isActive ? 'ACTIVE' : 'INACTIVE'} label={p.isActive ? '有効' : '無効'} />

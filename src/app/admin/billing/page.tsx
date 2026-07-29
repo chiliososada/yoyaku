@@ -5,6 +5,7 @@ import { prisma } from '@/lib/db';
 import { nowUtc } from '@/lib/time';
 import { isStripeConfigured } from '@/server/billing/stripe';
 import { evaluateBillingAccess } from '@/server/billing/billing-service';
+import { getBookingQuotaUsage } from '@/server/services/billing-quota-service';
 import { PageHeader, Panel } from '@/components/admin/ui';
 import { BillingPanel } from '@/components/admin/billing-panel';
 
@@ -33,6 +34,8 @@ export default async function BillingPage({
   });
   const gate = evaluateBillingAccess(tenant, { now: nowUtc(), stripeConfigured: isStripeConfigured() });
 
+  const quota = await getBookingQuotaUsage(user.tenantId);
+
   const plans = await prisma.plan.findMany({
     where: { isActive: true, stripePriceId: { not: null } },
     orderBy: { sortOrder: 'asc' },
@@ -57,6 +60,7 @@ export default async function BillingPage({
           planPriceJpy={tenant.plan?.priceJpy ?? null}
           plans={plans}
           checkoutResult={searchParams.checkout ?? null}
+          quota={{ used: quota.used, limit: quota.limit, planName: quota.planName }}
         />
       </Panel>
       {!canManage && (

@@ -8,7 +8,8 @@ import {
   dateAvailabilityQuerySchema,
   createBookingSchema,
 } from '@/lib/validation/booking';
-import { serviceFormSchema } from '@/lib/validation/admin';
+import { serviceFormSchema, shopHomepageSchema, shopCreateSchema } from '@/lib/validation/admin';
+import { planFormSchema } from '@/lib/validation/platform';
 
 describe('isoDateSchema', () => {
   it('実在する日付を受理する', () => {
@@ -116,5 +117,59 @@ describe('serviceFormSchema セール価格', () => {
   it('通常料金以上のセール価格は拒否', () => {
     expect(serviceFormSchema.safeParse({ ...base, salePriceJpy: 6000 }).success).toBe(false);
     expect(serviceFormSchema.safeParse({ ...base, salePriceJpy: 7000 }).success).toBe(false);
+  });
+});
+
+describe('shopHomepageSchema SNS URL（stored XSS 対策）', () => {
+  const base = { businessType: 'HairSalon' as const, homepageEnabled: false, showMenu: true, showStaff: true, showGallery: true, showAddress: true, gallery: [] };
+
+  it('http(s) の URL は受理', () => {
+    expect(shopHomepageSchema.safeParse({ ...base, websiteUrl: 'https://example.com' }).success).toBe(true);
+    expect(shopHomepageSchema.safeParse({ ...base, lineUrl: 'https://lin.ee/xyz' }).success).toBe(true);
+    expect(shopHomepageSchema.safeParse({ ...base, instagramUrl: '' }).success).toBe(true);
+  });
+
+  it('javascript: / data: 等のスキームは拒否', () => {
+    expect(shopHomepageSchema.safeParse({ ...base, websiteUrl: 'javascript:alert(1)' }).success).toBe(false);
+    expect(shopHomepageSchema.safeParse({ ...base, xUrl: 'data:text/html,<script>alert(1)</script>' }).success).toBe(false);
+    expect(shopHomepageSchema.safeParse({ ...base, instagramUrl: 'vbscript:msgbox(1)' }).success).toBe(false);
+  });
+
+  it('テーマカラーは #RRGGBB のみ', () => {
+    expect(shopHomepageSchema.safeParse({ ...base, themeColor: '#7c3aed' }).success).toBe(true);
+    expect(shopHomepageSchema.safeParse({ ...base, themeColor: 'red;background:url(x)' }).success).toBe(false);
+  });
+});
+
+describe('planFormSchema 予約件数の無制限(0)', () => {
+  const base = {
+    name: 'テストプラン',
+    priceJpy: 9800,
+    maxShops: 3,
+    maxStaffPerShop: 15,
+    stripePriceId: '',
+    isActive: true,
+  };
+
+  it('0 = 無制限 を保存できる（有料プランはこれを使う）', () => {
+    const r = planFormSchema.safeParse({ ...base, maxBookingsPerMonth: 0 });
+    expect(r.success).toBe(true);
+    if (r.success) expect(r.data.maxBookingsPerMonth).toBe(0);
+  });
+
+  it('通常の件数上限も保存できる（フリー枠用）', () => {
+    expect(planFormSchema.safeParse({ ...base, maxBookingsPerMonth: 100 }).success).toBe(true);
+  });
+
+  it('負数は拒否', () => {
+    expect(planFormSchema.safeParse({ ...base, maxBookingsPerMonth: -1 }).success).toBe(false);
+  });
+});
+
+describe('shopCreateSchema 予約語 slug', () => {
+  it('予約語（admin/book等）は拒否、通常slugは受理', () => {
+    expect(shopCreateSchema.safeParse({ name: 'X', slug: 'admin' }).success).toBe(false);
+    expect(shopCreateSchema.safeParse({ name: 'X', slug: 'book' }).success).toBe(false);
+    expect(shopCreateSchema.safeParse({ name: 'X', slug: 'my-salon' }).success).toBe(true);
   });
 });
