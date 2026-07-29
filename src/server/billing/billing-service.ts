@@ -18,6 +18,7 @@ import {
   createCheckoutSession,
   createStripeCustomer,
   isStripeConfigured,
+  StripeApiError,
 } from './stripe';
 
 /** 新規テナントに付与するローカル無料トライアル日数。 */
@@ -160,19 +161,34 @@ export async function startCheckout(tenantId: string, planId: string, email?: st
   if (!plan || !plan.isActive || !plan.stripePriceId) {
     throw Errors.notFound('このプランは現在お申し込みいただけません。');
   }
-  const customerId = await ensureStripeCustomer(tenantId, email);
   const base = env.APP_BASE_URL;
   // トライアル途中での申込でも残り日数を失わせない（Stripe 側にも同じ猶予を設定）
   const trialPeriodDays = remainingTrialDays(current?.trialEndsAt ?? null, nowUtc());
-  const session = await createCheckoutSession({
-    customerId,
-    priceId: plan.stripePriceId,
-    tenantId,
-    successUrl: `${base}/admin/billing?checkout=success`,
-    cancelUrl: `${base}/admin/billing?checkout=canceled`,
-    trialPeriodDays,
-  });
-  return session.url;
+  const open = (customerId: string) =>
+    createCheckoutSession({
+      customerId,
+      priceId: plan.stripePriceId!,
+      tenantId,
+      successUrl: `${base}/admin/billing?checkout=success`,
+      cancelUrl: `${base}/admin/billing?checkout=canceled`,
+      trialPeriodDays,
+    });
+
+  const customerId = await ensureStripeCustomer(tenantId, email);
+  try {
+    return (await open(customerId)).url;
+  } catch (e) {
+    // 保存済みの顧客IDが Stripe 側に存在しない場合の自己修復。
+    // ensureStripeCustomer は保存値をそのまま返すだけで実在確認をしないため、
+    // テスト→本番モードの切替・ダッシュボードでの顧客削除・古いバックアップからの復元
+    // などで無効な ID が残ると、商家は「申し込む」を押す度に同じ失敗を繰り返し、
+    // 二度と契約できない（最も痛い場面での静かな行き止まり）。作り直して1回だけ再試行する。
+    if (!(e instanceof StripeApiError) || !e.isResourceMissing('customer')) throw e;
+    logger.warn({ tenantId, staleCustomerId: customerId }, '[billing] stored Stripe customer is gone — recreating');
+    await prisma.tenant.update({ where: { id: tenantId }, data: { stripeCustomerId: null } });
+    const fresh = await ensureStripeCustomer(tenantId, email);
+    return (await open(fresh)).url;
+  }
 }
 
 /** Billing Portal（カード変更・解約等）の URL を発行。 */

@@ -33,6 +33,28 @@ export function toFormBody(params: Record<string, unknown>, prefix = ''): string
   return parts;
 }
 
+/**
+ * Stripe API のエラー。message だけだと呼び出し側が種別で分岐できないため、
+ * code/type/param をそのまま保持する（例: 保存済み顧客IDが無効＝resource_missing の自己修復）。
+ */
+export class StripeApiError extends Error {
+  constructor(
+    message: string,
+    readonly code: string | null,
+    readonly type: string | null,
+    readonly param: string | null,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = 'StripeApiError';
+  }
+
+  /** 指定パラメータが「Stripe 上に存在しない」と言われたか。 */
+  isResourceMissing(param: string): boolean {
+    return this.code === 'resource_missing' && this.param === param;
+  }
+}
+
 async function stripePost<T>(
   path: string,
   params: Record<string, unknown>,
@@ -49,10 +71,18 @@ async function stripePost<T>(
     },
     body: toFormBody(params).join('&'),
   });
-  const data = (await res.json()) as T & { error?: { message?: string; type?: string } };
+  const data = (await res.json()) as T & {
+    error?: { message?: string; type?: string; code?: string; param?: string };
+  };
   if (!res.ok) {
     const msg = data.error?.message ?? `Stripe API error (${res.status})`;
-    throw new Error(`[stripe] ${path}: ${msg}`);
+    throw new StripeApiError(
+      `[stripe] ${path}: ${msg}`,
+      data.error?.code ?? null,
+      data.error?.type ?? null,
+      data.error?.param ?? null,
+      res.status,
+    );
   }
   return data;
 }

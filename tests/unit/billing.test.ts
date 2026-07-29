@@ -4,7 +4,7 @@
 import { describe, it, expect } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { evaluateBillingAccess } from '@/server/billing/billing-service';
-import { verifyStripeSignature, toFormBody } from '@/server/billing/stripe';
+import { verifyStripeSignature, toFormBody, StripeApiError } from '@/server/billing/stripe';
 
 const NOW = new Date('2026-07-18T00:00:00.000Z');
 const base = {
@@ -122,6 +122,32 @@ describe('解約後の猶予（支払い済み期間の末日まで）', () => {
         { now: NOW, stripeConfigured: true },
       ),
     ).toMatchObject({ allowed: true, state: 'SUBSCRIBED' });
+  });
+});
+
+/**
+ * 保存済み顧客IDが Stripe 側に無いときの識別。
+ * ensureStripeCustomer は保存値を実在確認せず返すため、テスト→本番モード切替や
+ * 顧客削除で無効な ID が残ると、商家は申込の度に同じ失敗を繰り返す（静かな行き止まり）。
+ * startCheckout はこの条件だけを捉えて作り直す ＝ 誤爆させないことが重要。
+ */
+describe('StripeApiError の種別判定', () => {
+  it('customer の resource_missing だけを true と判定する', () => {
+    const e = new StripeApiError('No such customer', 'resource_missing', 'invalid_request_error', 'customer', 400);
+    expect(e.isResourceMissing('customer')).toBe(true);
+    // 別パラメータ（例: price 未存在）は顧客再作成の対象にしない
+    expect(e.isResourceMissing('price')).toBe(false);
+  });
+
+  it('カード拒否など別種のエラーでは再作成しない', () => {
+    const e = new StripeApiError('Your card was declined', 'card_declined', 'card_error', null, 402);
+    expect(e.isResourceMissing('customer')).toBe(false);
+  });
+
+  it('price が存在しない場合は customer 扱いしない（無関係な顧客再作成を防ぐ）', () => {
+    const e = new StripeApiError('No such price', 'resource_missing', 'invalid_request_error', 'price', 400);
+    expect(e.isResourceMissing('customer')).toBe(false);
+    expect(e.isResourceMissing('price')).toBe(true);
   });
 });
 
