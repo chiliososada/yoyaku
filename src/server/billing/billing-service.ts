@@ -490,6 +490,16 @@ async function syncSubscription(
     occurredAt: eventAtMs ? new Date(eventAtMs) : nowUtc(),
   });
 
+  // 解約確認メール（猶予期間の案内を含む）。同一イベントの再送では増えない。
+  if (deleted && stripeEventId) {
+    const { enqueueBillingNotice } = await import('@/server/services/billing-notification-service');
+    await enqueueBillingNotice({
+      tenantId: tenant.id,
+      template: 'BILLING_SUBSCRIPTION_CANCELED',
+      dedupeKey: `evt:${stripeEventId}`,
+    }).catch((e) => logger.warn({ err: String(e) }, '[billing] cancel notice enqueue failed'));
+  }
+
   logger.info({ tenantId: tenant.id, subscriptionId: sub.id, status }, '[billing] subscription synced');
 }
 
@@ -592,6 +602,16 @@ export async function processStripeEvent(event: StripeEvent): Promise<void> {
         stripeInvoiceId: inv.id ?? null,
         occurredAt: eventAtMs ? new Date(eventAtMs) : nowUtc(),
       });
+      // 督促後に支払いが通ったときだけ「復旧しました」を送る。
+      // 通常の毎月の入金でいちいちメールを送ると鬱陶しいので past_due からの回復時に限定する。
+      if (event.id && tenant.stripeSubscriptionStatus === 'past_due') {
+        const { enqueueBillingNotice } = await import('@/server/services/billing-notification-service');
+        await enqueueBillingNotice({
+          tenantId: tenant.id,
+          template: 'BILLING_PAYMENT_RECOVERED',
+          dedupeKey: `evt:${event.id}`,
+        }).catch((e) => logger.warn({ err: String(e) }, '[billing] recovery notice enqueue failed'));
+      }
       logger.info({ tenantId: tenant.id, amount: inv.amount_paid }, '[billing] payment succeeded');
       return;
     }
@@ -691,6 +711,16 @@ export async function processStripeEvent(event: StripeEvent): Promise<void> {
         stripeInvoiceId: inv.id ?? null,
         occurredAt: eventAtMs ? new Date(eventAtMs) : nowUtc(),
       });
+      // 督促メール。dedupeKey に Stripe イベントIDを使うので、同一イベントの再送では増えない。
+      // Stripe のリトライ（日単位）は別イベントになるため、そのつど督促が飛ぶ＝意図どおり。
+      if (event.id) {
+        const { enqueueBillingNotice } = await import('@/server/services/billing-notification-service');
+        await enqueueBillingNotice({
+          tenantId: tenant.id,
+          template: 'BILLING_PAYMENT_FAILED',
+          dedupeKey: `evt:${event.id}`,
+        }).catch((e) => logger.warn({ err: String(e) }, '[billing] dunning notice enqueue failed'));
+      }
       logger.warn({ tenantId: tenant.id }, '[billing] invoice payment failed → past_due');
       return;
     }

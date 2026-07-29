@@ -129,6 +129,14 @@ enum NotificationTemplate {
   BOOKING_CANCELLED
   BOOKING_REMINDER
   BOOKING_RESCHEDULED
+  /// 課金系（宛先は商家オーナー）。トライアルの取りこぼしと督促を自動化する
+  TRIAL_ENDING_7
+  TRIAL_ENDING_3
+  TRIAL_ENDING_1
+  TRIAL_ENDED
+  BILLING_PAYMENT_FAILED
+  BILLING_PAYMENT_RECOVERED
+  BILLING_SUBSCRIPTION_CANCELED
 }
 
 enum SubscriptionStatus {
@@ -976,6 +984,11 @@ model NotificationJob {
   template    NotificationTemplate
   recipient   String
   payload     Json                 @default("{}")
+  /// 「同じ相手に同じ用件を二度送らない」ための鍵。
+  /// 日次スイープは自己修復のため何度でも走るので、コード側の慎重さではなく
+  /// DB の一意制約で重複送信を止める（多重起動でも成立する）。
+  /// 例) トライアル系 = 'trial:2026-08-28' / 課金系 = 'evt:evt_xxx'。予約系は null。
+  dedupeKey   String?
   status      NotificationStatus   @default(PENDING)
   attempts    Int                  @default(0)
   /// 既定 9 回。バックオフ 2/4/8/16/30/30/30/30 分 = 計150分の障害に耐える。
@@ -994,6 +1007,8 @@ model NotificationJob {
   /// 予約のキャンセル/改期時に未送信リマインドを無効化する検索用。
   /// 改期は advisory lock 保持中に走るため、ここが seq scan だとロック保持時間が伸びる。
   @@index([bookingId])
+  /// 重複送信の防波堤。NULL 同士は衝突しないため予約系（dedupeKey=null）には影響しない。
+  @@unique([tenantId, template, dedupeKey])
   @@map("notification_jobs")
 }
 

@@ -11,6 +11,7 @@ import { nowUtc } from '@/lib/time';
 import { isEmailConfigured, sendEmail } from '@/server/notifications/email';
 import { isLineConfigured, sendLineMessage } from '@/server/notifications/line';
 import { buildBookingEmail, buildManagerNotification, templateToManagerEvent } from '@/server/notifications/templates';
+import { buildBillingNotification } from '@/server/services/billing-notification-service';
 
 type JobRow = {
   id: string;
@@ -21,8 +22,18 @@ type JobRow = {
   payload: unknown;
 };
 
-/** ジョブ → 送信内容。宛先種別（payload.audience: MANAGER=店長 / それ以外=顧客）で文面を出し分け。 */
+/** ジョブ → 送信内容。宛先種別（payload.audience: MANAGER=店長 / OWNER=課金 / それ以外=顧客）で出し分け。 */
 async function buildContent(job: JobRow): Promise<{ subject: string; text: string }> {
+  // 課金系（トライアル終了予告・督促・解約確認）は予約に紐づかない
+  const meta = (job.payload ?? {}) as { audience?: string; event?: string; ownerName?: string; trialEndsAt?: string };
+  if (meta.audience === 'OWNER') {
+    const built = buildBillingNotification({
+      template: job.template,
+      ownerName: meta.ownerName,
+      trialEndsAt: meta.trialEndsAt,
+    });
+    return built ?? { subject: `[${job.template}]`, text: '' };
+  }
   if (!job.bookingId) return { subject: `[${job.template}]`, text: '' };
   const b = await prisma.booking.findUnique({
     where: { id: job.bookingId },
