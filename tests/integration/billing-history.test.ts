@@ -280,6 +280,139 @@ describe('解約が集計可能になっている', () => {
   });
 });
 
+/**
+ * 返金を台帳で表現できること。ここが無いと Stripe 側で手動返金した瞬間に
+ * SUM(amountJpy) が実収入より過大になり、MRR/LTV が無言で狂う。
+ */
+describe('返金の記録（実収入が狂わないこと）', () => {
+  async function seedPaidTenant(tag: string) {
+    const sc = await seedScenario({ staffCount: 1 });
+    createdTenants.push(sc.tenantId);
+    const suffix = sc.tenantId.slice(-8);
+    const price = `price_${tag}_${suffix}`;
+    const plan = await prisma.plan.create({
+      data: { code: `${tag}-${suffix}`, name: '返金検証', priceJpy: 9800, stripePriceId: price },
+    });
+    createdPlans.push(plan.id);
+    const cus = `cus_${tag}_${suffix}`;
+    await prisma.tenant.update({
+      where: { id: sc.tenantId },
+      data: { stripeCustomerId: cus, billingExempt: false, planId: plan.id },
+    });
+    // 入金 9,800 円
+    await processStripeEvent({
+      id: `evt_paid_${tag}_${suffix}`,
+      type: 'invoice.paid',
+      created: nextTs(),
+      data: { object: { id: `in_${tag}_${suffix}`, customer: cus, amount_paid: 9800, currency: 'jpy' } },
+    });
+    return { tenantId: sc.tenantId, cus, suffix };
+  }
+
+  /** 実収入 = 入金 + 返金（返金は負数なので素直に足せる）。 */
+  async function netRevenue(tenantId: string) {
+    const agg = await prisma.billingEvent.aggregate({
+      where: { tenantId, type: { in: ['PAYMENT_SUCCEEDED', 'PAYMENT_REFUNDED'] } },
+      _sum: { amountJpy: true },
+    });
+    return agg._sum.amountJpy ?? 0;
+  }
+
+  const refundEvent = (opts: {
+    id: string; cus: string; charge: string; amountRefunded: number;
+    refunds: Array<{ id: string; amount: number; status?: string }>;
+  }) => ({
+    id: opts.id,
+    type: 'charge.refunded',
+    created: nextTs(),
+    data: { object: {
+      id: opts.charge, customer: opts.cus, amount_refunded: opts.amountRefunded,
+      refunds: { data: opts.refunds },
+    } as Record<string, unknown> },
+  });
+
+  it('全額返金で実収入が 0 になる', async () => {
+    const { tenantId, cus, suffix } = await seedPaidTenant('rf');
+    expect(await netRevenue(tenantId)).toBe(9800);
+
+    await processStripeEvent(refundEvent({
+      id: `evt_rf_${suffix}`, cus, charge: `ch_rf_${suffix}`,
+      amountRefunded: 9800, refunds: [{ id: `re_rf_${suffix}`, amount: 9800, status: 'succeeded' }],
+    }));
+
+    const ev = await prisma.billingEvent.findFirstOrThrow({
+      where: { tenantId, type: 'PAYMENT_REFUNDED' },
+      select: { amountJpy: true, stripeRefundId: true, stripeChargeId: true },
+    });
+    expect(ev.amountJpy).toBe(-9800); // 負数で相殺できる形
+    expect(ev.stripeRefundId).toBe(`re_rf_${suffix}`);
+    expect(await netRevenue(tenantId)).toBe(0);
+  });
+
+  it('分割返金でも累計値を二重計上しない（3,000 → 5,000 で合計 -8,000）', async () => {
+    const { tenantId, cus, suffix } = await seedPaidTenant('rp');
+    const charge = `ch_rp_${suffix}`;
+    const r1 = `re_rp1_${suffix}`;
+    const r2 = `re_rp2_${suffix}`;
+
+    // 1回目: 3,000円返金（amount_refunded は累計 3,000）
+    await processStripeEvent(refundEvent({
+      id: `evt_rp1_${suffix}`, cus, charge, amountRefunded: 3000,
+      refunds: [{ id: r1, amount: 3000, status: 'succeeded' }],
+    }));
+    expect(await netRevenue(tenantId)).toBe(9800 - 3000);
+
+    // 2回目: さらに 5,000円返金。Stripe は**累計 8,000** と、既存分を含む返金一覧を送ってくる。
+    // 累計をそのまま記録すると -3,000 + -8,000 = -11,000 になってしまう。
+    await processStripeEvent(refundEvent({
+      id: `evt_rp2_${suffix}`, cus, charge, amountRefunded: 8000,
+      refunds: [
+        { id: r1, amount: 3000, status: 'succeeded' },
+        { id: r2, amount: 5000, status: 'succeeded' },
+      ],
+    }));
+
+    const rows = await prisma.billingEvent.findMany({
+      where: { tenantId, type: 'PAYMENT_REFUNDED' },
+      select: { amountJpy: true, stripeRefundId: true },
+    });
+    expect(rows).toHaveLength(2); // 返金は2件だけ（r1 は再送されても増えない）
+    expect(rows.map((r) => r.amountJpy).sort((a, b) => a! - b!)).toEqual([-5000, -3000]);
+    expect(await netRevenue(tenantId)).toBe(9800 - 8000);
+  });
+
+  it('同一 Webhook の再送で二重計上しない', async () => {
+    const { tenantId, cus, suffix } = await seedPaidTenant('rd');
+    const ev = refundEvent({
+      id: `evt_rd_${suffix}`, cus, charge: `ch_rd_${suffix}`,
+      amountRefunded: 4000, refunds: [{ id: `re_rd_${suffix}`, amount: 4000, status: 'succeeded' }],
+    });
+    await processStripeEvent(ev);
+    await processStripeEvent(ev);
+    await processStripeEvent(ev);
+    expect(await prisma.billingEvent.count({ where: { tenantId, type: 'PAYMENT_REFUNDED' } })).toBe(1);
+    expect(await netRevenue(tenantId)).toBe(9800 - 4000);
+  });
+
+  it('失敗した返金は計上しない（金銭が動いていないため）', async () => {
+    const { tenantId, cus, suffix } = await seedPaidTenant('rn');
+    await processStripeEvent(refundEvent({
+      id: `evt_rn_${suffix}`, cus, charge: `ch_rn_${suffix}`,
+      amountRefunded: 0, refunds: [{ id: `re_rn_${suffix}`, amount: 9800, status: 'failed' }],
+    }));
+    expect(await prisma.billingEvent.count({ where: { tenantId, type: 'PAYMENT_REFUNDED' } })).toBe(0);
+    expect(await netRevenue(tenantId)).toBe(9800);
+  });
+
+  it('未知の顧客の返金は無視する（他テナントの数字を汚さない）', async () => {
+    await processStripeEvent(refundEvent({
+      id: `evt_rx_${Date.now()}`, cus: 'cus_does_not_exist_xyz', charge: 'ch_x',
+      amountRefunded: 5000, refunds: [{ id: `re_x_${Date.now()}`, amount: 5000, status: 'succeeded' }],
+    }));
+    expect(await prisma.billingEvent.count({ where: { stripeRefundId: { startsWith: 're_x_' } } })).toBe(0);
+  });
+});
+
 describe('解約後の猶予が Webhook 経由でも成立する', () => {
   it('期中解約でも支払い済み期間の末日まで使え、期間情報の無い解約イベントでも末日が消えない', async () => {
     const sc = await seedScenario({ staffCount: 1 });

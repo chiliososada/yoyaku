@@ -211,6 +211,8 @@ async function recordBillingEvent(input: {
   stripeEventId?: string | null;
   stripeSubscriptionId?: string | null;
   stripeInvoiceId?: string | null;
+  stripeChargeId?: string | null;
+  stripeRefundId?: string | null;
   occurredAt: Date;
 }): Promise<void> {
   try {
@@ -242,12 +244,16 @@ async function recordBillingEvent(input: {
         stripeEventId: input.stripeEventId ?? null,
         stripeSubscriptionId: input.stripeSubscriptionId ?? null,
         stripeInvoiceId: input.stripeInvoiceId ?? null,
+        stripeChargeId: input.stripeChargeId ?? null,
+        stripeRefundId: input.stripeRefundId ?? null,
         occurredAt: input.occurredAt,
       },
     });
   } catch (e) {
     if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
-      // 同一 Stripe イベントの再送 → 既に記録済み。正常。
+      // 一意制約 = 記録済み。正常な二重計上防止:
+      //   stripeEventId  … 同一 Webhook イベントの再送
+      //   stripeRefundId … 同じ返金が別イベント／累計値の再通知として再来
       return;
     }
     logger.error(
@@ -471,6 +477,19 @@ async function syncSubscription(
   logger.info({ tenantId: tenant.id, subscriptionId: sub.id, status }, '[billing] subscription synced');
 }
 
+/** charge.refunded の charge オブジェクト（必要な項目のみ）。 */
+interface StripeChargeObject {
+  id?: string;
+  customer?: string;
+  invoice?: string;
+  /** その charge に対する返金の**累計**額（最小通貨単位）。単一返金の額ではない。 */
+  amount_refunded?: number;
+  refunds?: {
+    has_more?: boolean;
+    data?: Array<{ id?: string; amount?: number; status?: string; created?: number }>;
+  };
+}
+
 interface StripeEvent {
   id?: string;
   type: string;
@@ -558,6 +577,70 @@ export async function processStripeEvent(event: StripeEvent): Promise<void> {
         occurredAt: eventAtMs ? new Date(eventAtMs) : nowUtc(),
       });
       logger.info({ tenantId: tenant.id, amount: inv.amount_paid }, '[billing] payment succeeded');
+      return;
+    }
+    case 'charge.refunded': {
+      // 返金は Stripe ダッシュボードから手動で行うことがあり、その痕跡が台帳に無いと
+      // SUM(amountJpy) が実収入より過大になる（しかも無言で狂う）。負数で追記して相殺する。
+      //
+      // 二重計上の罠: charge.refunded は返金の度に発火し、charge.amount_refunded は**累計**。
+      // 例) 3,000円 → 5,000円 と分割返金すると 3,000 / 8,000 と届く。累計をそのまま
+      // 記録すると合計 -11,000（実際は -8,000）。よって**単一返金 id ごと**に記録する。
+      const charge = event.data.object as StripeChargeObject;
+      if (!charge.customer) return;
+      const tenant = await prisma.tenant.findUnique({
+        where: { stripeCustomerId: charge.customer },
+        select: TENANT_BILLING_SELECT,
+      });
+      if (!tenant) {
+        logger.warn({ charge: charge.id, customer: charge.customer }, '[billing] refund: tenant not found');
+        return;
+      }
+
+      const refunds = charge.refunds?.data ?? [];
+      if (charge.refunds?.has_more) {
+        // 1件の charge に返金が大量にある稀ケース。取りこぼしは下の照合で検知される。
+        logger.warn({ charge: charge.id }, '[billing] refund list paginated (has_more) — verify totals');
+      }
+      for (const r of refunds) {
+        if (!r.id || typeof r.amount !== 'number') continue;
+        // 実際に金銭が動いた返金のみ計上。pending/failed/canceled は計上しない
+        // （failed を計上すると「返したのに返していない」逆方向のズレになる）。
+        if (r.status && r.status !== 'succeeded') {
+          logger.warn({ charge: charge.id, refund: r.id, status: r.status }, '[billing] refund not succeeded — not recorded');
+          continue;
+        }
+        await recordBillingEvent({
+          tenantId: tenant.id,
+          type: 'PAYMENT_REFUNDED',
+          planId: tenant.planId,
+          // 負数で記録（JPY は 0 桁通貨なので最小単位＝円）
+          amountJpy: -Math.abs(r.amount),
+          toStatus: tenant.stripeSubscriptionStatus,
+          stripeEventId: null, // 冪等キーは refund id 側で担保（1イベントに複数返金が載りうる）
+          stripeSubscriptionId: tenant.stripeSubscriptionId,
+          stripeInvoiceId: charge.invoice ?? null,
+          stripeChargeId: charge.id ?? null,
+          stripeRefundId: r.id,
+          occurredAt: typeof r.created === 'number' ? new Date(r.created * 1000) : eventAtMs ? new Date(eventAtMs) : nowUtc(),
+        });
+      }
+
+      // 照合: 台帳に載った返金合計と Stripe の累計が一致するか。ズレたら運用者が気づけるよう警告。
+      if (typeof charge.amount_refunded === 'number' && charge.id) {
+        const agg = await prisma.billingEvent.aggregate({
+          where: { tenantId: tenant.id, type: 'PAYMENT_REFUNDED', stripeChargeId: charge.id },
+          _sum: { amountJpy: true },
+        });
+        const ledger = Math.abs(agg._sum.amountJpy ?? 0);
+        if (ledger !== charge.amount_refunded) {
+          logger.warn(
+            { tenantId: tenant.id, charge: charge.id, ledger, stripe: charge.amount_refunded },
+            '[billing] refund total mismatch between ledger and Stripe',
+          );
+        }
+      }
+      logger.info({ tenantId: tenant.id, charge: charge.id, refunded: charge.amount_refunded }, '[billing] refund recorded');
       return;
     }
     case 'invoice.payment_failed': {

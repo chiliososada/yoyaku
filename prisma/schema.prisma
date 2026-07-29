@@ -237,6 +237,7 @@ enum BillingEventType {
   PLAN_CHANGED
   PAYMENT_SUCCEEDED
   PAYMENT_FAILED
+  PAYMENT_REFUNDED
   SUBSCRIPTION_CANCELED
 }
 
@@ -256,7 +257,9 @@ model BillingEvent {
   planId    String?
   planCode  String?
   planName  String?
-  /// 発生時点の金額（円）。PAYMENT_SUCCEEDED では実際の請求額、契約系ではプラン価格。
+  /// 発生時点の金額（円）。PAYMENT_SUCCEEDED では実際の入金額、契約系ではプラン価格。
+  /// **PAYMENT_REFUNDED は負数**。これにより実収入は
+  /// SUM(amountJpy) WHERE type IN (PAYMENT_SUCCEEDED, PAYMENT_REFUNDED) で素直に出る。
   amountJpy Int?
   currency  String  @default("jpy")
   /// 状態遷移（Stripe の subscription.status 生値）
@@ -266,6 +269,10 @@ model BillingEvent {
   stripeEventId        String? @unique
   stripeSubscriptionId String?
   stripeInvoiceId      String?
+  stripeChargeId       String?
+  /// 返金の冪等キー。charge.refunded は1つの charge に対し返金の度に発火し、
+  /// charge.amount_refunded は**累計値**なので、単一返金の id で二重計上を DB 側で止める。
+  stripeRefundId String? @unique
   /// イベント発生時刻（Stripe の created。無ければ受信時刻）
   occurredAt DateTime @db.Timestamptz(6)
   createdAt  DateTime @default(now()) @db.Timestamptz(6)
