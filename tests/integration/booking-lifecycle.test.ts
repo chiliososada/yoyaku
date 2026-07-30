@@ -272,3 +272,31 @@ describe('後台の代理登録は締切に縛られない', () => {
     ).rejects.toThrow();
   });
 });
+
+/**
+ * スタッフ個人の「同時対応数」。カラーの放置中に別の客を入れる運用は実在するので、
+ * 全員一律1にすると後台で設定しても何も起きない（設定が効かない典型例）。
+ */
+/**
+ * スタッフ個人の「同時対応数」は現状サポートできない。
+ * booking_items の GiST 排他制約が同一スタッフの時間重複を物理的に禁止しており、
+ * 排他制約は「最大N件」を表現できないため、2以上を許すと
+ * 「空きあり表示 → 確定時にDBエラー」という最悪の形になる。
+ * ここでは**1件で満席になること**を固定し、将来の設計変更時に気づけるようにする。
+ */
+describe('スタッフは同時に1件まで（排他制約の保証）', () => {
+  it('capacity 列を2にしても2件目は入らない（DB制約が優先）', async () => {
+    const sc = await seedScenario({ staffCount: 1, staffCapacity: 1, shopCapacity: 99, serviceCapacity: 99 });
+    createdTenants.push(sc.tenantId);
+    await prisma.staff.update({ where: { id: sc.staffIds[0]! }, data: { capacity: 2 } });
+    const slot = await firstAvailable(sc);
+    const book = (name: string) =>
+      createBooking({
+        tenantId: sc.tenantId, shopId: sc.shopId, serviceId: sc.serviceId,
+        staffId: sc.staffIds[0]!, startAt: slot.startAt,
+        customer: { name, email: `${name}@test.com` }, now: NOW,
+      });
+    expect((await book('one')).status).toBe('CONFIRMED');
+    await expect(book('two')).rejects.toThrow();
+  });
+});

@@ -67,8 +67,21 @@ export function StaffForm({
         <Field label="表示名" error={errors.displayName?.message} hint="顧客向けの表示名（任意）">
           <Input {...register('displayName')} placeholder="山田" />
         </Field>
-        <Field label="同時対応数" error={errors.capacity?.message} hint="通常は1">
-          <Input type="number" min={1} {...register('capacity')} />
+        {/*
+          「同時対応数」は入力欄を出さない。
+          booking_items の GiST 排他制約
+            EXCLUDE USING gist (staffId WITH =, tstzrange(startAt,endAt) WITH &&)
+          が「同一スタッフの時間重複」を物理的に禁止しており、排他制約は
+          「最大N件まで許す」を表現できない。よって2以上を設定できるようにすると
+          「空きあり」と表示されたのに確定時にDBエラー、という最悪の形になる。
+          （実測: capacity=2 にしても2件目の挿入が制約違反で失敗した）
+          1人が同時に複数名を見る運用に対応するなら、排他制約を容量認識型の仕組みへ
+          置き換える設計変更が必要で、それは防超卖の根幹に触れるため別途判断する。
+          値は schema 既定の 1 のまま送る。
+        */}
+        <input type="hidden" {...register('capacity')} />
+        <Field label="同時対応数" hint="現在は1名ずつの対応のみに対応しています。">
+          <Input type="number" value={1} disabled readOnly />
         </Field>
       </div>
       <div className="grid gap-4 sm:grid-cols-2">

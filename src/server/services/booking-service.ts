@@ -709,7 +709,7 @@ export async function createBooking(input: CreateBookingInput): Promise<CreateBo
             serviceStart: input.startAt,
             serviceEnd: occ.serviceEndAt,
             staffCapacity: rules.staffCapacity,
-          });
+                });
           if (free.length === 0) throw reasonError('STAFF_UNAVAILABLE');
           assignedStaffId = free[0]!;
         }
@@ -1283,7 +1283,7 @@ export async function rescheduleBooking(input: RescheduleBookingInput): Promise<
             serviceStart: input.newStartAt,
             serviceEnd: occ.serviceEndAt,
             staffCapacity: combo.rules.staffCapacity,
-          });
+                });
           if (free.length === 0) throw reasonError('STAFF_UNAVAILABLE');
           assignedStaffId = free[0]!;
         }
