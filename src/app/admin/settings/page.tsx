@@ -10,8 +10,17 @@ export default async function SettingsPage() {
   const user = await requireTenantUser();
   const shop = await getPrimaryShop(user.tenantId);
   const { shop: s } = await getShopConfig(user.tenantId, shop.id);
+  // 同時受付上限は SHOP スコープの容量ルールが唯一の正（予約ルール画面と同じ値を見る）。
+  // settings JSON 側は後方互換の写しでしかないため、そちらを表示すると
+  // 「設定画面では3なのに実際は1件しか入らない」という食い違いが起きる。
+  const { prisma } = await import('@/lib/db');
+  const shopRule = await prisma.bookingCapacityRule.findFirst({
+    where: { shopId: shop.id, scope: 'SHOP', serviceId: null, staffId: null },
+    select: { maxConcurrent: true },
+  });
   const settings = (s.settings as Record<string, unknown>) ?? {};
-  const shopCapacity = typeof settings.shopCapacity === 'number' ? settings.shopCapacity : 1;
+  const shopCapacity =
+    shopRule?.maxConcurrent ?? (typeof settings.shopCapacity === 'number' ? settings.shopCapacity : 1);
 
   return (
     <div>

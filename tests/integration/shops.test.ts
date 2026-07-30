@@ -61,3 +61,45 @@ describe('createShop（複数店舗）', () => {
     expect(bCount).toBe(1); // B は影響なし
   });
 });
+
+/**
+ * 「店舗同時受付上限」は店舗設定と予約ルールの2画面にあるが、実際に効くのは
+ * SHOP スコープの容量ルールだけだった。店主が席を増やしても保存はできるのに
+ * 1件しか入らず、原因が分からない（保存成功の表示だけが出る）。
+ */
+describe('店舗設定の同時受付上限が実際に効く', () => {
+  it('設定を3に変えると SHOP 容量ルールも3になり、空き枠の残数に反映される', async () => {
+    const { getDayAvailability } = await import('@/server/services/booking-service');
+    const sc = await seedScenario({ staffCount: 3, staffCapacity: 1, shopCapacity: 1 });
+    tenants.push(sc.tenantId);
+
+    const before = await prisma.bookingCapacityRule.findFirstOrThrow({
+      where: { shopId: sc.shopId, scope: 'SHOP' },
+      select: { maxConcurrent: true },
+    });
+    expect(before.maxConcurrent).toBe(1);
+
+    await svc.updateShopSettings(sc.tenantId, sc.shopId, {
+      name: 'テスト店', description: '', phone: '', email: '',
+      postalCode: '', prefecture: '', city: '', address: '',
+      status: 'PUBLISHED', publicBookingEnabled: true, closeOnNationalHolidays: false,
+      shopCapacity: 3,
+    });
+
+    // 予約ルール側（唯一の正）が更新されている
+    const after = await prisma.bookingCapacityRule.findFirstOrThrow({
+      where: { shopId: sc.shopId, scope: 'SHOP' },
+      select: { maxConcurrent: true },
+    });
+    expect(after.maxConcurrent).toBe(3);
+
+    // 実際の空き計算にも効く（残数が3人ぶん出る）
+    const { slots } = await getDayAvailability({
+      tenantId: sc.tenantId, shopId: sc.shopId, serviceId: sc.serviceId,
+      date: '2026-09-07', now: new Date('2026-09-01T00:00:00Z'),
+    });
+    const open = slots.filter((s) => s.available);
+    expect(open.length).toBeGreaterThan(0);
+    expect(Math.max(...open.map((s) => s.remaining))).toBeGreaterThan(1);
+  });
+});

@@ -408,6 +408,15 @@ export async function updateShopSettings(tenantId: string, shopId: string, input
   const existing = await prisma.shop.findFirst({ where: { id: shopId, tenantId, deletedAt: null }, select: { id: true, settings: true } });
   if (!existing) throw Errors.notFound('店舗が見つかりません。');
   const settings = { ...((existing.settings as Record<string, unknown>) ?? {}), shopCapacity: input.shopCapacity };
+  // 「店舗同時受付上限」の唯一の正は SHOP スコープの容量ルール。
+  // 以前は settings JSON にしか書いておらず、resolveBookingRules は
+  // `shopRule?.maxConcurrent ?? fallback` で必ず先に SHOP ルール（新規店舗は常に 1）を拾うため、
+  // 店主が席数を増やしても**保存はできるのに1件しか入らない**状態だった。
+  // 予約ルール画面と同じ行を書き換え、どちらの画面から編集しても一致させる。
+  await prisma.bookingCapacityRule.updateMany({
+    where: { shopId, scope: 'SHOP', serviceId: null, staffId: null },
+    data: { maxConcurrent: input.shopCapacity },
+  });
   return prisma.shop.update({
     where: { id: shopId },
     data: {
