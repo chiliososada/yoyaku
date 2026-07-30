@@ -927,6 +927,8 @@ export interface BookingDetail {
   staffName: string | null;
   shopName: string;
   shopSlug: string;
+  /** 期限超過で自分ではキャンセルできない客が連絡する先。無いと詰みになるため公開する。 */
+  shopPhone: string | null;
   timezone: string;
   customerName: string;
   totalPriceJpy: number;
@@ -968,7 +970,7 @@ export async function getBookingByToken(
       shopId: true,
       service: { select: { name: true } },
       staff: { select: { name: true, displayName: true } },
-      shop: { select: { name: true, slug: true, timezone: true } },
+      shop: { select: { name: true, slug: true, timezone: true, phone: true } },
       items: {
         orderBy: { sortOrder: 'asc' },
         select: {
@@ -1014,6 +1016,7 @@ export async function getBookingByToken(
     staffName: b.staff?.displayName ?? b.staff?.name ?? null,
     shopName: b.shop.name,
     shopSlug: b.shop.slug,
+    shopPhone: b.shop.phone,
     timezone: b.shop.timezone,
     customerName: b.customerName,
     totalPriceJpy: b.totalPriceJpy,

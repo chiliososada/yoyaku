@@ -156,6 +156,16 @@ export function computeAvailability(input: AvailabilityInput): SlotAvailability[
           staffCapacity: rules.staffCapacity,
         });
         staffRemaining = avail.length;
+        // 0人の理由を区別する。「予約で埋まっている（満席）」と
+        // 「そもそも誰も出勤していない」は原因も対処も違う。
+        // 例: 臨時営業日を足したがシフトは曜日ベースのまま → 予約は1件も無いのに全枠「満席」と
+        // 表示され、店主も客も原因に辿り着けない。ここで STAFF_UNAVAILABLE に倒す。
+        if (staffRemaining <= 0) {
+          const anyWorking = candidateStaffIds.some((sid) =>
+            isWorkingDuring(staffWorkingIntervals, sid, startAt, serviceEndAt),
+          );
+          if (!anyWorking) staffReasonFail = true;
+        }
       } else if (input.requiresStaff) {
         // 担当が必要なのに候補が0人。
         // ここを「スタッフ不要」と同一視すると全枠が「空きあり」に見え、客は日時・氏名・

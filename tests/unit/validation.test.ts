@@ -2,6 +2,7 @@
  * 入力検証スキーマの単体テスト（公開API入口の防御）。
  */
 import { describe, it, expect } from 'vitest';
+import { capacityRuleSchema } from '@/lib/validation/admin';
 import {
   isoDateSchema,
   availabilityQuerySchema,
@@ -299,5 +300,44 @@ describe('validation: メニューの時間帯分割', () => {
       { offsetMin: 0, durationMin: 20 },
       { offsetMin: 70, durationMin: 20 },
     ]).success).toBe(true); // 70+20 = 90
+  });
+});
+
+describe('予約ルール: 組合せで「1枠も出ない」設定を弾く', () => {
+  const base = {
+    maxConcurrent: 1,
+    slotIntervalMin: 30,
+    bookingWindowDays: 30,
+    leadTimeMinHours: 2,
+    cancellationDeadlineHours: 24,
+  };
+  const parse = (over: Partial<typeof base>) => capacityRuleSchema.safeParse({ ...base, ...over });
+
+  it('既定値（30日先まで/2時間前締切）は受理', () => {
+    expect(parse({}).success).toBe(true);
+  });
+
+  it('締切が受付期間を超えると拒否（全日程が締切超過になる）', () => {
+    const r = parse({ bookingWindowDays: 1, leadTimeMinHours: 48 });
+    expect(r.success).toBe(false);
+    const msg = r.success ? '' : r.error.issues.map((i) => i.message).join(' / ');
+    expect(msg).toContain('1件も受け付けられません');
+  });
+
+  it('ちょうど受付期間と同じ締切は受理（境界）', () => {
+    expect(parse({ bookingWindowDays: 1, leadTimeMinHours: 24 }).success).toBe(true);
+  });
+
+  it('受付期間が当日のみで締切24時間以上なら拒否', () => {
+    const r = parse({ bookingWindowDays: 0, leadTimeMinHours: 24 });
+    expect(r.success).toBe(false);
+  });
+
+  it('受付期間が当日のみでも締切23時間なら受理', () => {
+    expect(parse({ bookingWindowDays: 0, leadTimeMinHours: 23 }).success).toBe(true);
+  });
+
+  it('キャンセル期限が締切より長くてもエラーにはしない（画面で注意喚起する運用）', () => {
+    expect(parse({ leadTimeMinHours: 2, cancellationDeadlineHours: 24 }).success).toBe(true);
   });
 });

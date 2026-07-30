@@ -220,13 +220,38 @@ export const specialDaySchema = z
 export type SpecialDayInput = z.infer<typeof specialDaySchema>;
 
 // ---- 容量ルール（既存ルールの編集） ----
-export const capacityRuleSchema = z.object({
-  maxConcurrent: z.coerce.number().int().min(1, '1以上').max(1000),
-  slotIntervalMin: z.coerce.number().int().min(5).max(240),
-  bookingWindowDays: z.coerce.number().int().min(0).max(365),
-  leadTimeMinHours: z.coerce.number().int().min(0).max(720),
-  cancellationDeadlineHours: z.coerce.number().int().min(0).max(720),
-});
+export const capacityRuleSchema = z
+  .object({
+    maxConcurrent: z.coerce.number().int().min(1, '1以上').max(1000),
+    slotIntervalMin: z.coerce.number().int().min(5).max(240),
+    bookingWindowDays: z.coerce.number().int().min(0).max(365),
+    leadTimeMinHours: z.coerce.number().int().min(0).max(720),
+    cancellationDeadlineHours: z.coerce.number().int().min(0).max(720),
+  })
+  /**
+   * 各項目は妥当でも、組合せが「予約が1件も取れない」設定になりうる。
+   * 症状は「全部の日が×」で、店主はどの項目が原因か特定できないため入力時に弾く。
+   */
+  .superRefine((v, ctx) => {
+    // 締切が受付期間より先にあると、受付可能な日は全て締切超過になる
+    if (v.bookingWindowDays > 0 && v.leadTimeMinHours > v.bookingWindowDays * 24) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['leadTimeMinHours'],
+        message:
+          `締切（${v.leadTimeMinHours}時間前）が受付期間（${v.bookingWindowDays}日先まで＝${v.bookingWindowDays * 24}時間）を超えています。` +
+          `この組合せでは予約を1件も受け付けられません。`,
+      });
+    }
+    // 受付期間0日 = 当日のみ受付。締切が24時間以上だと当日枠が全て締切超過になる
+    if (v.bookingWindowDays === 0 && v.leadTimeMinHours >= 24) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['leadTimeMinHours'],
+        message: '受付期間が当日のみのため、締切は24時間未満にしてください（現状では予約を受け付けられません）。',
+      });
+    }
+  });
 export type CapacityRuleInput = z.infer<typeof capacityRuleSchema>;
 
 // ---- スタッフシフト ----

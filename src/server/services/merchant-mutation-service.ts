@@ -464,11 +464,49 @@ async function countActiveBookingsOn(
   });
 }
 
+/**
+ * その暦日に「1分でも出勤する」スタッフが居るかを返す。
+ *
+ * スタッフのシフトは**曜日ベース**（RECURRING）なので、臨時営業日（SPECIAL_OPEN）を
+ * 登録しても、その曜日が定休扱いのシフトなら**誰も出勤していない**。
+ * 店側の画面では「営業日を追加した」ように見えるのに、客の予約画面では全枠が埋まって見える
+ * ——という一番気づけない不整合を、登録直後に知らせる。
+ */
+async function hasStaffOnDuty(shopId: string, date: string): Promise<boolean> {
+  const day = dateOnly(date);
+  const dow = new Date(`${date}T00:00:00+09:00`).getUTCDay();
+  const rows = await prisma.staffSchedule.findMany({
+    where: {
+      shopId,
+      staff: { status: 'ACTIVE', isBookable: true, deletedAt: null },
+      OR: [
+        { type: 'OVERRIDE', date: day },
+        { type: 'RECURRING', dayOfWeek: dow },
+      ],
+    },
+    select: { staffId: true, type: true, isWorking: true },
+  });
+  // 同じ日の OVERRIDE は RECURRING より優先。スタッフ単位で判定する。
+  const byStaff = new Map<string, { override?: boolean; recurring?: boolean }>();
+  for (const r of rows) {
+    const e = byStaff.get(r.staffId) ?? {};
+    if (r.type === 'OVERRIDE') e.override = (e.override ?? false) || r.isWorking;
+    else e.recurring = (e.recurring ?? false) || r.isWorking;
+    byStaff.set(r.staffId, e);
+  }
+  for (const e of byStaff.values()) {
+    if (e.override !== undefined ? e.override : (e.recurring ?? false)) return true;
+  }
+  return false;
+}
+
 export async function addSpecialDay(tenantId: string, shopId: string, input: SpecialDayInput) {
   await assertShopInTenant(tenantId, shopId);
   // 休業にする日に既に予約が入っていることを店主へ知らせる（自動キャンセルはしない）
   const affectedBookings =
     input.type === 'CLOSED' ? await countActiveBookingsOn(shopId, input.date) : 0;
+  // 臨時営業・時間変更なのに出勤者ゼロ＝客からは全枠「×」に見える
+  const noStaffOnDuty = input.type === 'CLOSED' ? false : !(await hasStaffOnDuty(shopId, input.date));
   await prisma.specialBusinessDay.upsert({
     where: { shopId_date: { shopId, date: dateOnly(input.date) } },
     update: {
@@ -487,7 +525,7 @@ export async function addSpecialDay(tenantId: string, shopId: string, input: Spe
       reason: input.reason || null,
     },
   });
-  return { affectedBookings };
+  return { affectedBookings, noStaffOnDuty };
 }
 
 export async function deleteSpecialDay(tenantId: string, shopId: string, id: string) {

@@ -174,7 +174,7 @@ export async function updateHomepageAction(shopId: string, input: ShopHomepageIn
 export async function addSpecialDayAction(
   shopId: string,
   input: SpecialDayInput,
-): Promise<ActionResult<{ affectedBookings: number }>> {
+): Promise<ActionResult<{ affectedBookings: number; noStaffOnDuty: boolean }>> {
   return runAction(async () => {
     const data = specialDaySchema.parse(input);
     const user = await authz(PERMISSIONS.SCHEDULE_WRITE, shopId);
@@ -183,8 +183,8 @@ export async function addSpecialDayAction(
       date: data.date, type: data.type, affectedBookings: res.affectedBookings,
     });
     revalidatePath('/admin/calendar');
-    // 休業にした日に予約が残っている件数を画面へ返す（自動キャンセルはしない）
-    return { affectedBookings: res.affectedBookings };
+    // 休業にした日に予約が残っている件数／臨時営業日に出勤者が居ない事実を画面へ返す
+    return { affectedBookings: res.affectedBookings, noStaffOnDuty: res.noStaffOnDuty };
   });
 }
 

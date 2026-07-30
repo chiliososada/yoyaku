@@ -101,10 +101,21 @@ export default async function BookingDetailPage({ params }: { params: { token: s
               !booking.cancellable &&
               booking.status !== 'COMPLETED' &&
               booking.status !== 'NO_SHOW' && (
-                <p className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
-                  キャンセル期限（開始の{booking.cancellationDeadlineHours}時間前）を過ぎているため、
-                  オンラインでのキャンセルはできません。店舗へ直接ご連絡ください。
-                </p>
+                <div className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+                  <p>
+                    キャンセル期限（開始の{booking.cancellationDeadlineHours}時間前）を過ぎているため、
+                    このページからのキャンセル・変更はできません。店舗へ直接ご連絡ください。
+                  </p>
+                  {/* 連絡先が無いと「店舗へご連絡ください」は行き止まりになる。電話番号があれば必ず出す。 */}
+                  {booking.shopPhone && (
+                    <p className="mt-1">
+                      <a href={`tel:${booking.shopPhone}`} className="font-medium text-foreground underline">
+                        {booking.shopPhone}
+                      </a>
+                      <span> に発信</span>
+                    </p>
+                  )}
+                </div>
               )}
             {cancelled && (
               <p className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">

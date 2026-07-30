@@ -25,10 +25,19 @@ export function CapacityRuleForm({
   const router = useRouter();
   const [serverError, setServerError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
-  const { register, handleSubmit, formState: { errors, isSubmitting } } = useForm<CapacityRuleInput>({
+  const { register, handleSubmit, watch, formState: { errors, isSubmitting } } = useForm<CapacityRuleInput>({
     resolver: zodResolver(capacityRuleSchema),
     defaultValues: initial,
   });
+
+  // 締切とキャンセル期限は単体では妥当でも、組合せで「客が自分でキャンセルできない予約」を生む。
+  // 例: 締切2時間前 + キャンセル期限24時間前 → 24時間以内に入った予約は最初から
+  // キャンセル不可（客は確認メールのリンクを開いても操作できず、店に電話が来る）。
+  // 禁止すべき設定ではない（当日枠を守りたい店は正当）ため、エラーではなく注意書きで知らせる。
+  const lead = Number(watch('leadTimeMinHours'));
+  const cancelDl = Number(watch('cancellationDeadlineHours'));
+  const cancelGap =
+    Number.isFinite(lead) && Number.isFinite(cancelDl) && cancelDl > lead ? cancelDl : null;
 
   const onSubmit = async (data: CapacityRuleInput) => {
     setServerError(null);
@@ -67,6 +76,14 @@ export function CapacityRuleForm({
           <Input type="number" min={0} {...register('cancellationDeadlineHours')} />
         </Field>
       </div>
+      {cancelGap !== null && (
+        <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          ご注意: 開始{cancelGap}時間前より後に入った予約は、お客様ご自身ではキャンセルできません
+          （受付の締切が{lead}時間前のため、この時間帯の予約は最初から期限切れの状態になります）。
+          該当のお客様には「店舗へご連絡ください」と案内され、電話等での対応が必要になります。
+          この運用で問題なければそのままで構いません。
+        </p>
+      )}
       <div className="mt-3">
         <Button type="submit" size="sm" disabled={isSubmitting}>保存</Button>
       </div>

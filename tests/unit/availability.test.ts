@@ -209,3 +209,38 @@ describe('availability: 受付期間外は満席と区別される', () => {
     expect(slots.some((s) => s.reason === 'SLOT_FULL')).toBe(false);
   });
 });
+
+describe('availability: 空き0の理由を取り違えない', () => {
+  it('候補スタッフが誰も出勤していない日は SLOT_FULL ではなく STAFF_UNAVAILABLE', () => {
+    // 臨時営業日を足したが、その曜日のシフトが未設定 → 予約は0件なのに全枠が埋まって見える事故
+    const slots = computeAvailability(
+      buildInput({ candidateStaffIds: ['s1'], staffWorkingIntervals: [], occupied: [] }),
+    );
+    expect(slots).toHaveLength(3);
+    for (const s of slots) {
+      expect(s.available).toBe(false);
+      expect(s.reason).toBe('STAFF_UNAVAILABLE');
+    }
+  });
+
+  it('出勤しているが予約で埋まっている枠は SLOT_FULL のまま', () => {
+    const working: StaffWorkingInterval[] = [
+      { staffId: 's1', start: d('2026-06-15T00:00:00Z'), end: d('2026-06-15T03:00:00Z') },
+    ];
+    const occupied: OccupiedInterval[] = [
+      {
+        bookingId: 'b1',
+        serviceId: 'svc1',
+        staffId: 's1',
+        start: d('2026-06-15T00:00:00Z'),
+        end: d('2026-06-15T01:00:00Z'),
+      },
+    ];
+    const slots = computeAvailability(
+      buildInput({ candidateStaffIds: ['s1'], staffWorkingIntervals: working, occupied }),
+    );
+    const first = slots[0]!;
+    expect(first.available).toBe(false);
+    expect(first.reason).toBe('SLOT_FULL');
+  });
+});
