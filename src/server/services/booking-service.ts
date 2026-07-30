@@ -324,7 +324,8 @@ export async function getDayAvailability(
   return { date, timeZone: tz, dayStatus, slots };
 }
 
-export type DateAvailabilityStatus = 'OPEN' | 'FEW' | 'FULL' | 'CLOSED';
+/** BEYOND_WINDOW = まだ受付を開始していない日（満席ではない）。 */
+export type DateAvailabilityStatus = 'OPEN' | 'FEW' | 'FULL' | 'CLOSED' | 'BEYOND_WINDOW';
 
 export interface DateSummaryParams {
   tenantId: string;
@@ -415,9 +416,19 @@ export async function getDateAvailabilitySummary(
     });
 
     const availCount = slots.filter((s) => s.available).length;
+    // 受付期間より先の日を「×（満）」と出すのは事実と違う（予約は1件も入っていない）。
+    // 「まだ受付前」と「満席」を客が区別できないと、空いているのに諦めて離脱する。
+    const allBeyondWindow =
+      slots.length > 0 && slots.every((s) => s.reason === 'BOOKING_WINDOW_EXCEEDED');
     out.push({
       date,
-      status: availCount === 0 ? 'FULL' : availCount <= FEW_THRESHOLD ? 'FEW' : 'OPEN',
+      status: allBeyondWindow
+        ? 'BEYOND_WINDOW'
+        : availCount === 0
+          ? 'FULL'
+          : availCount <= FEW_THRESHOLD
+            ? 'FEW'
+            : 'OPEN',
     });
   }
 

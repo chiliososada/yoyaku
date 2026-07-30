@@ -53,7 +53,11 @@ export function ShopSettingsForm({ shopId, initial }: { shopId: string; initial:
         <Field label="電話" error={errors.phone?.message}>
           <Input {...register('phone')} />
         </Field>
-        <Field label="メール" error={errors.email?.message}>
+        <Field
+          label="メール（店舗の連絡先）"
+          error={errors.email?.message}
+          hint="控えとして保存するだけの項目です。予約の通知先は「通知設定」で登録してください。"
+        >
           <Input type="email" {...register('email')} />
         </Field>
       </div>

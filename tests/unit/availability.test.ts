@@ -177,3 +177,35 @@ describe('availability: 担当必須なのに候補0人', () => {
     expect(slots.every((s) => s.available)).toBe(true);
   });
 });
+
+/**
+ * 受付期間より先の日を「×（満）」と出すのは事実と違う（予約は1件も入っていない）。
+ * 客が「満席だから諦める」のを防ぐため、理由を区別できる形で返す。
+ */
+describe('availability: 受付期間外は満席と区別される', () => {
+  it('window を超えた日は全枠 BOOKING_WINDOW_EXCEEDED（SLOT_FULL ではない）', () => {
+    const date = '2026-12-25'; // now から遠い日
+    const slots = computeAvailability({
+      serviceId: 'svc1',
+      date,
+      timeZone: 'Asia/Tokyo',
+      dayStatus: 'OPEN',
+      segments: [{ offsetMin: 0, durationMin: 60 }],
+      bufferBeforeMin: 0,
+      bufferAfterMin: 0,
+      rules: { ...DEFAULT_RULES, slotIntervalMin: 60, bookingWindowDays: 30, shopCapacity: 5, serviceCapacity: 5 },
+      staffId: null,
+      candidateStaffIds: [],
+      requiresStaff: false,
+      staffWorkingIntervals: [],
+      occupied: [],
+      now: new Date('2026-09-01T00:00:00Z'),
+      openIntervals: [
+        { start: zonedDateMinutesToUtc(date, 600, 'Asia/Tokyo'), end: zonedDateMinutesToUtc(date, 780, 'Asia/Tokyo') },
+      ],
+    });
+    expect(slots.length).toBeGreaterThan(0);
+    expect(slots.every((s) => s.reason === 'BOOKING_WINDOW_EXCEEDED')).toBe(true);
+    expect(slots.some((s) => s.reason === 'SLOT_FULL')).toBe(false);
+  });
+});

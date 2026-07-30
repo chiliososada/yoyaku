@@ -79,11 +79,14 @@ const STEPS: { key: Step; label: string }[] = [
   { key: 'confirm', label: '確認' },
 ];
 
-const DATE_MARK: Record<'OPEN' | 'FEW' | 'FULL' | 'CLOSED', { label: string; cls: string }> = {
+type DateMark = 'OPEN' | 'FEW' | 'FULL' | 'CLOSED' | 'BEYOND_WINDOW';
+const DATE_MARK: Record<DateMark, { label: string; cls: string }> = {
   OPEN: { label: '○', cls: 'text-green-600' },
   FEW: { label: '△', cls: 'text-amber-600' },
   FULL: { label: '×', cls: 'text-slate-400' },
   CLOSED: { label: '休', cls: 'text-slate-400' },
+  // 満席ではなく「まだ受付前」。× と同じ記号にすると空いているのに諦められてしまう
+  BEYOND_WINDOW: { label: '－', cls: 'text-slate-300' },
 };
 
 function todayInTz(tz: string): string {
@@ -125,7 +128,7 @@ export function BookingWizard({ shop, liffId }: { shop: WizardShop; liffId?: str
   const [slot, setSlot] = useState<Slot | null>(null);
   const [slots, setSlots] = useState<Slot[]>([]);
   const [dayStatus, setDayStatus] = useState<string>('OPEN');
-  const [dateStatus, setDateStatus] = useState<Record<string, 'OPEN' | 'FEW' | 'FULL' | 'CLOSED'>>({});
+  const [dateStatus, setDateStatus] = useState<Record<string, DateMark>>({});
   const [loadingSlots, setLoadingSlots] = useState(false);
   const [form, setForm] = useState({ name: '', nameKana: '', email: '', phone: '', note: '' });
   const [submitting, setSubmitting] = useState(false);
@@ -329,7 +332,7 @@ export function BookingWizard({ shop, liffId }: { shop: WizardShop; liffId?: str
   useEffect(() => {
     if (step !== 'datetime') return;
     if (monthOf(date) !== viewMonth) return;
-    if (dateStatus[date] === 'FULL' || dateStatus[date] === 'CLOSED' || date < today) {
+    if (dateStatus[date] === 'FULL' || dateStatus[date] === 'CLOSED' || dateStatus[date] === 'BEYOND_WINDOW' || date < today) {
       const firstOpen = monthGrid.find(
         (d): d is string => !!d && d >= today && (dateStatus[d] === 'OPEN' || dateStatus[d] === 'FEW'),
       );
@@ -717,7 +720,7 @@ export function BookingWizard({ shop, liffId }: { shop: WizardShop; liffId?: str
                 const isToday = d === today;
                 const isPast = d < today;
                 const st = dateStatus[d];
-                const unbookable = isPast || st === 'FULL' || st === 'CLOSED';
+                const unbookable = isPast || st === 'FULL' || st === 'CLOSED' || st === 'BEYOND_WINDOW';
                 const mark = !isPast && st ? DATE_MARK[st] : null;
                 return (
                   <button

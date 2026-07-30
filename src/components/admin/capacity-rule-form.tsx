@@ -50,7 +50,11 @@ export function CapacityRuleForm({
         <Field label="同時受付数" error={errors.maxConcurrent?.message}>
           <Input type="number" min={1} {...register('maxConcurrent')} />
         </Field>
-        <Field label="予約刻み(分)" error={errors.slotIntervalMin?.message}>
+        <Field
+          label="予約刻み(分)"
+          error={errors.slotIntervalMin?.message}
+          hint="メニューごとの「予約刻み」が優先されます。実際の刻みは各メニューの設定をご確認ください。"
+        >
           <Input type="number" min={5} step={5} {...register('slotIntervalMin')} />
         </Field>
         <Field label="受付(日前から)" error={errors.bookingWindowDays?.message}>
