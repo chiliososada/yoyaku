@@ -3,7 +3,7 @@
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { useForm, useFieldArray } from 'react-hook-form';
-import { Check, Plus, X, Trash2, Loader2 } from 'lucide-react';
+import { Check, Plus, X, Trash2, Loader2, AlertTriangle } from 'lucide-react';
 import {
   replaceStaffScheduleAction,
   addStaffOverrideAction,
@@ -95,6 +95,7 @@ export function RecurringScheduleForm({
 export function StaffOverrideForm({ staffId, shopId }: { staffId: string; shopId: string }) {
   const router = useRouter();
   const [serverError, setServerError] = useState<string | null>(null);
+  const [ovNotice, setOvNotice] = useState<string | null>(null);
   const { register, handleSubmit, watch, reset, formState: { isSubmitting } } = useForm<{
     date: string; isWorking: boolean; open: string; close: string; note: string;
   }>({ defaultValues: { isWorking: false, open: '10:00', close: '19:00', note: '' } });
@@ -110,6 +111,14 @@ export function StaffOverrideForm({ staffId, shopId }: { staffId: string; shopId
       note: data.note || undefined,
     });
     if (!res.ok) { setServerError(res.error); return; }
+    // 欠勤にした日にその人の予約が残っていたら知らせる（自動キャンセルはしない）
+    const n = res.data?.affectedBookings ?? 0;
+    setOvNotice(
+      n > 0
+        ? `この日にはこのスタッフのご予約が ${n} 件入っています。自動ではキャンセルしていません。` +
+            `担当の変更やお客様へのご連絡をご検討ください。`
+        : null,
+    );
     reset({ isWorking: false, open: '10:00', close: '19:00', note: '', date: '' });
     router.refresh();
   });
@@ -117,6 +126,12 @@ export function StaffOverrideForm({ staffId, shopId }: { staffId: string; shopId
   return (
     <form onSubmit={onSubmit} className="grid gap-3">
       <FormError message={serverError} />
+      {ovNotice && (
+        <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+          <span>{ovNotice}</span>
+        </div>
+      )}
       <div className="flex flex-wrap items-end gap-3">
         <label className="grid gap-1 text-sm">
           <span className="font-medium">日付</span>

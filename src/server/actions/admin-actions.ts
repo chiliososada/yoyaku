@@ -171,13 +171,20 @@ export async function updateHomepageAction(shopId: string, input: ShopHomepageIn
 }
 
 // ---- 特別営業日 ----
-export async function addSpecialDayAction(shopId: string, input: SpecialDayInput): Promise<ActionResult> {
+export async function addSpecialDayAction(
+  shopId: string,
+  input: SpecialDayInput,
+): Promise<ActionResult<{ affectedBookings: number }>> {
   return runAction(async () => {
     const data = specialDaySchema.parse(input);
     const user = await authz(PERMISSIONS.SCHEDULE_WRITE, shopId);
-    const sd = await svc.addSpecialDay(user.tenantId, shopId, data);
-    await audit(user, 'specialDay.upsert', 'special_business_day', sd.id, { date: data.date, type: data.type });
+    const res = await svc.addSpecialDay(user.tenantId, shopId, data);
+    await audit(user, 'specialDay.upsert', 'special_business_day', shopId, {
+      date: data.date, type: data.type, affectedBookings: res.affectedBookings,
+    });
     revalidatePath('/admin/calendar');
+    // 休業にした日に予約が残っている件数を画面へ返す（自動キャンセルはしない）
+    return { affectedBookings: res.affectedBookings };
   });
 }
 
@@ -212,13 +219,20 @@ export async function replaceStaffScheduleAction(staffId: string, shopId: string
   });
 }
 
-export async function addStaffOverrideAction(staffId: string, shopId: string, input: StaffOverrideInput): Promise<ActionResult> {
+export async function addStaffOverrideAction(
+  staffId: string,
+  shopId: string,
+  input: StaffOverrideInput,
+): Promise<ActionResult<{ affectedBookings: number }>> {
   return runAction(async () => {
     const data = staffOverrideSchema.parse(input);
     const user = await authz(PERMISSIONS.STAFF_WRITE, shopId);
-    const ov = await svc.addStaffOverride(user.tenantId, shopId, staffId, data);
-    await audit(user, 'staffSchedule.override', 'staff_schedule', ov.id, { date: data.date, isWorking: data.isWorking });
+    const res = await svc.addStaffOverride(user.tenantId, shopId, staffId, data);
+    await audit(user, 'staffSchedule.override', 'staff_schedule', staffId, {
+      date: data.date, isWorking: data.isWorking, affectedBookings: res.affectedBookings,
+    });
     revalidatePath(`/admin/staff/${staffId}/schedule`);
+    return { affectedBookings: res.affectedBookings };
   });
 }
 

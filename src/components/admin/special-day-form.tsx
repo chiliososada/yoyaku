@@ -6,6 +6,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Plus } from 'lucide-react';
 import { specialDaySchema, type SpecialDayInput } from '@/lib/validation/admin';
+import { AlertTriangle } from 'lucide-react';
 import { addSpecialDayAction } from '@/server/actions/admin-actions';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -15,6 +16,7 @@ import { hhmmToMinutes } from '@/lib/time';
 export function SpecialDayForm({ shopId }: { shopId: string }) {
   const router = useRouter();
   const [serverError, setServerError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const {
     register,
     handleSubmit,
@@ -29,10 +31,20 @@ export function SpecialDayForm({ shopId }: { shopId: string }) {
 
   const onSubmit = async (data: SpecialDayInput) => {
     setServerError(null);
+    setNotice(null);
     const res = await addSpecialDayAction(shopId, data);
     if (!res.ok) {
       setServerError(res.error);
       return;
+    }
+    // 休業にした日に予約が残っていたら知らせる。
+    // 勝手に取り消すと客への連絡なしに来店が無になるため、判断は店主に委ねる。
+    const n = res.data?.affectedBookings ?? 0;
+    if (n > 0) {
+      setNotice(
+        `この日にはすでに ${n} 件のご予約が入っています。自動ではキャンセルしていません。` +
+          `「予約」画面から内容をご確認のうえ、お客様へご連絡ください。`,
+      );
     }
     reset({ type: 'CLOSED', reason: '', date: '' });
     router.refresh();
@@ -41,6 +53,12 @@ export function SpecialDayForm({ shopId }: { shopId: string }) {
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="grid gap-3">
       <FormError message={serverError} />
+      {notice && (
+        <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+          <span>{notice}</span>
+        </div>
+      )}
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="日付" required error={errors.date?.message}>
           <Input type="date" {...register('date')} />

@@ -437,9 +437,39 @@ export async function updateShopSettings(tenantId: string, shopId: string, input
 }
 
 // ---- 特別営業日 ----
+
+/**
+ * 指定日（店舗ローカル暦日）に入っている有効な予約を数える。
+ * 休業・欠勤の登録時に「その日すでに客が入っている」ことを店主へ知らせるために使う。
+ *
+ * **自動キャンセルはしない**。客との約束を店主の確認なしに取り消すのは、
+ * 通知も謝罪もないまま来店を無にする行為で、取り返しがつかない。
+ * ここでは件数を返すだけにして、判断と連絡は店主に委ねる。
+ */
+async function countActiveBookingsOn(
+  shopId: string,
+  date: string,
+  opts: { staffId?: string } = {},
+): Promise<number> {
+  const start = new Date(`${date}T00:00:00+09:00`);
+  const end = new Date(start.getTime() + 86_400_000);
+  return prisma.booking.count({
+    where: {
+      shopId,
+      deletedAt: null,
+      status: { in: ['CONFIRMED', 'PENDING'] },
+      startAt: { gte: start, lt: end },
+      ...(opts.staffId ? { staffId: opts.staffId } : {}),
+    },
+  });
+}
+
 export async function addSpecialDay(tenantId: string, shopId: string, input: SpecialDayInput) {
   await assertShopInTenant(tenantId, shopId);
-  return prisma.specialBusinessDay.upsert({
+  // 休業にする日に既に予約が入っていることを店主へ知らせる（自動キャンセルはしない）
+  const affectedBookings =
+    input.type === 'CLOSED' ? await countActiveBookingsOn(shopId, input.date) : 0;
+  await prisma.specialBusinessDay.upsert({
     where: { shopId_date: { shopId, date: dateOnly(input.date) } },
     update: {
       type: input.type,
@@ -457,6 +487,7 @@ export async function addSpecialDay(tenantId: string, shopId: string, input: Spe
       reason: input.reason || null,
     },
   });
+  return { affectedBookings };
 }
 
 export async function deleteSpecialDay(tenantId: string, shopId: string, id: string) {
@@ -514,8 +545,10 @@ export async function replaceStaffRecurringSchedule(tenantId: string, shopId: st
 /** 特定日の出勤/欠勤（OVERRIDE）を追加（同日があれば置換）。 */
 export async function addStaffOverride(tenantId: string, shopId: string, staffId: string, input: StaffOverrideInput) {
   await assertStaffInShop(tenantId, shopId, staffId);
+  // 欠勤にする日にその人の予約が入っていることを店主へ知らせる（自動キャンセルはしない）
+  const affectedBookings = input.isWorking ? 0 : await countActiveBookingsOn(shopId, input.date, { staffId });
   const date = dateOnly(input.date);
-  return prisma.$transaction(async (tx) => {
+  await prisma.$transaction(async (tx) => {
     await tx.staffSchedule.deleteMany({ where: { staffId, type: 'OVERRIDE', date } });
     return tx.staffSchedule.create({
       data: {
@@ -527,6 +560,7 @@ export async function addStaffOverride(tenantId: string, shopId: string, staffId
       },
     });
   });
+  return { affectedBookings };
 }
 
 export async function deleteStaffOverride(tenantId: string, shopId: string, scheduleId: string) {

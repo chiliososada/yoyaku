@@ -149,12 +149,13 @@ describe('店舗設定 / 特別営業日 / 営業時間', () => {
   it('特別営業日の追加(upsert)と削除', async () => {
     const sc = await seedScenario({ staffCount: 1 });
     createdTenants.push(sc.tenantId);
-    const added = await svc.addSpecialDay(sc.tenantId, sc.shopId, { date: '2026-12-31', type: 'CLOSED', reason: '年末' });
+    await svc.addSpecialDay(sc.tenantId, sc.shopId, { date: '2026-12-31', type: 'CLOSED', reason: '年末' });
     expect(await prisma.specialBusinessDay.count({ where: { shopId: sc.shopId } })).toBe(1);
     // 同日 upsert
     await svc.addSpecialDay(sc.tenantId, sc.shopId, { date: '2026-12-31', type: 'SPECIAL_OPEN', openMinute: 600, closeMinute: 900 });
     expect(await prisma.specialBusinessDay.count({ where: { shopId: sc.shopId } })).toBe(1);
-    await svc.deleteSpecialDay(sc.tenantId, sc.shopId, added.id);
+    const row = await prisma.specialBusinessDay.findFirstOrThrow({ where: { shopId: sc.shopId }, select: { id: true } });
+    await svc.deleteSpecialDay(sc.tenantId, sc.shopId, row.id);
     expect(await prisma.specialBusinessDay.count({ where: { shopId: sc.shopId } })).toBe(0);
   });
 
@@ -211,5 +212,82 @@ describe('店舗設定 / 特別営業日 / 営業時間', () => {
     await expect(svc.updateCapacityRule(other.tenantId, other.shopId, rule!.id, {
       maxConcurrent: 1, slotIntervalMin: 15, bookingWindowDays: 30, leadTimeMinHours: 2, cancellationDeadlineHours: 24,
     })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+});
+
+/**
+ * 休業・欠勤を登録したとき、その日に既に入っている予約を店主へ知らせる。
+ * **自動キャンセルはしない**（客への連絡なしに来店を無にするのは取り返しがつかない）。
+ * 件数だけを返し、判断と連絡は店主に委ねる。
+ */
+describe('休業・欠勤の登録は既存予約の件数を返す', () => {
+  const bookOn = async (
+    sc: { tenantId: string; shopId: string; serviceId: string },
+    startAt: Date,
+    staffId?: string,
+  ) => {
+    const customer = await prisma.customer.create({
+      data: { tenantId: sc.tenantId, shopId: sc.shopId, name: 'x', email: `w${Math.random()}@t.test` },
+    });
+    await prisma.booking.create({
+      data: {
+        tenantId: sc.tenantId, shopId: sc.shopId, customerId: customer.id, serviceId: sc.serviceId,
+        startAt, endAt: new Date(startAt.getTime() + 3600_000),
+        status: 'CONFIRMED', totalPriceJpy: 1000, customerName: 'x',
+        ...(staffId ? { staffId } : {}),
+      },
+    });
+  };
+
+  it('臨時休業: その日の予約件数を返す（予約は消さない）', async () => {
+    const sc = await seedScenario({ staffCount: 1 });
+    createdTenants.push(sc.tenantId);
+    // JST 2026-10-05 の 11:00 と 14:00
+    await bookOn(sc, new Date('2026-10-05T02:00:00Z'));
+    await bookOn(sc, new Date('2026-10-05T05:00:00Z'));
+    // 別日は数えない
+    await bookOn(sc, new Date('2026-10-06T02:00:00Z'));
+
+    const res = await svc.addSpecialDay(sc.tenantId, sc.shopId, {
+      date: '2026-10-05', type: 'CLOSED', reason: '研修',
+    });
+    expect(res.affectedBookings).toBe(2);
+    // 予約は消えていない
+    expect(await prisma.booking.count({ where: { shopId: sc.shopId, status: 'CONFIRMED' } })).toBe(3);
+  });
+
+  it('特別営業（休業ではない）は件数を数えない', async () => {
+    const sc = await seedScenario({ staffCount: 1 });
+    createdTenants.push(sc.tenantId);
+    await bookOn(sc, new Date('2026-10-07T02:00:00Z'));
+    const res = await svc.addSpecialDay(sc.tenantId, sc.shopId, {
+      date: '2026-10-07', type: 'SPECIAL_OPEN', openMinute: 600, closeMinute: 900,
+    });
+    expect(res.affectedBookings).toBe(0);
+  });
+
+  it('スタッフ欠勤: その人のその日の予約だけを数える', async () => {
+    const sc = await seedScenario({ staffCount: 2 });
+    createdTenants.push(sc.tenantId);
+    const [a, b] = sc.staffIds;
+    await bookOn(sc, new Date('2026-10-08T02:00:00Z'), a);
+    await bookOn(sc, new Date('2026-10-08T05:00:00Z'), a);
+    await bookOn(sc, new Date('2026-10-08T02:00:00Z'), b); // 別スタッフは数えない
+
+    const res = await svc.addStaffOverride(sc.tenantId, sc.shopId, a!, {
+      date: '2026-10-08', isWorking: false,
+    });
+    expect(res.affectedBookings).toBe(2);
+    expect(await prisma.booking.count({ where: { shopId: sc.shopId, status: 'CONFIRMED' } })).toBe(3);
+  });
+
+  it('出勤登録（欠勤ではない）は件数を数えない', async () => {
+    const sc = await seedScenario({ staffCount: 1 });
+    createdTenants.push(sc.tenantId);
+    await bookOn(sc, new Date('2026-10-09T02:00:00Z'), sc.staffIds[0]);
+    const res = await svc.addStaffOverride(sc.tenantId, sc.shopId, sc.staffIds[0]!, {
+      date: '2026-10-09', isWorking: true, startMinute: 600, endMinute: 1140,
+    });
+    expect(res.affectedBookings).toBe(0);
   });
 });
