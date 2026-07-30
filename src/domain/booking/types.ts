@@ -110,8 +110,14 @@ export interface AvailabilityInput {
   rules: ResolvedBookingRules;
   /** 指名スタッフID（null=おまかせ） */
   staffId: string | null;
-  /** 指名おまかせ時の候補スタッフ群（容量計算に使用、空ならスタッフ制約なし） */
+  /** 指名おまかせ時の候補スタッフ群 */
   candidateStaffIds: string[];
+  /**
+   * 担当スタッフが必須のサービスか。
+   * これが無いと「スタッフ不要」と「必須だが候補0人」を区別できず、後者が
+   * 全枠「空きあり」に見えて確定ボタンでだけ失敗する（客も店主も原因が分からない）。
+   */
+  requiresStaff?: boolean;
   /** 当日の各スタッフ稼働区間（おまかせ時の供給上限算出に使用） */
   staffWorkingIntervals: StaffWorkingInterval[];
   /** 当日の店舗全体の既存占有区間（active な booking_items 由来、serviceId/staffId 付き）。

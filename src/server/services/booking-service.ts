@@ -307,6 +307,7 @@ export async function getDayAvailability(
     rules: combo.rules,
     staffId,
     candidateStaffIds: combo.requiresStaff ? combo.candidateStaffIds : [],
+      requiresStaff: combo.requiresStaff,
     staffWorkingIntervals,
     occupied,
     now,
@@ -399,6 +400,7 @@ export async function getDateAvailabilitySummary(
       rules: combo.rules,
       staffId,
       candidateStaffIds: combo.requiresStaff ? combo.candidateStaffIds : [],
+      requiresStaff: combo.requiresStaff,
       staffWorkingIntervals,
       occupied: dayOccupied,
       now,
@@ -476,7 +478,9 @@ const REASON_TO_ERROR: Record<SlotUnavailableReason, { code: AppErrorCode; msg: 
   OUTSIDE_BUSINESS_HOURS: { code: 'OUTSIDE_BUSINESS_HOURS', msg: '選択された時間は営業時間外です。' },
   STAFF_UNAVAILABLE: {
     code: 'STAFF_UNAVAILABLE',
-    msg: '指名のスタッフはこの時間帯はご対応できません。',
+    // 「指名の」と書かない: おまかせ予約でも担当が0人ならこの理由になるため、
+    // 誰も指名していない客が「指名のスタッフは…」と言われて意味が分からなくなる。
+    msg: 'この時間帯に対応できるスタッフがいません。別の日時をお選びください。',
   },
   LEAD_TIME_VIOLATION: {
     code: 'LEAD_TIME_VIOLATION',
@@ -657,6 +661,7 @@ export async function createBooking(input: CreateBookingInput): Promise<CreateBo
           rules,
           staffId: staffIdReq,
           candidateStaffIds: combo.requiresStaff ? combo.candidateStaffIds : [],
+      requiresStaff: combo.requiresStaff,
           staffWorkingIntervals,
           occupied,
           now,
@@ -1234,6 +1239,7 @@ export async function rescheduleBooking(input: RescheduleBookingInput): Promise<
           rules: combo.rules,
           staffId: staffIdReq,
           candidateStaffIds: combo.requiresStaff ? combo.candidateStaffIds : [],
+      requiresStaff: combo.requiresStaff,
           staffWorkingIntervals,
           occupied,
           now,

@@ -48,9 +48,13 @@ export function RecurringScheduleForm({
   const onSubmit = handleSubmit(async (data) => {
     setServerError(null);
     setSaved(false);
-    const rows = data.rows
-      .map((r) => ({ dayOfWeek: Number(r.dayOfWeek), startMinute: hhmmToMinutes(r.open), endMinute: hhmmToMinutes(r.close) }))
-      .filter((r) => r.endMinute > r.startMinute);
+    // 不正行を捨てない（営業時間フォームと同じ理由）。捨てると「保存しました」だけが出て
+    // その曜日の出勤が理由不明で消える。サーバー検証に渡して曜日つきのエラーを出す。
+    const rows = data.rows.map((r) => ({
+      dayOfWeek: Number(r.dayOfWeek),
+      startMinute: hhmmToMinutes(r.open),
+      endMinute: hhmmToMinutes(r.close),
+    }));
     const res = await replaceStaffScheduleAction(staffId, shopId, { rows });
     if (!res.ok) { setServerError(res.error); return; }
     setSaved(true);

@@ -156,8 +156,15 @@ export function computeAvailability(input: AvailabilityInput): SlotAvailability[
           staffCapacity: rules.staffCapacity,
         });
         staffRemaining = avail.length;
+      } else if (input.requiresStaff) {
+        // 担当が必要なのに候補が0人。
+        // ここを「スタッフ不要」と同一視すると全枠が「空きあり」に見え、客は日時・氏名・
+        // 連絡先まで入力し終えた**最後の確定ボタンで初めて**失敗する（しかも理由が分からない）。
+        // 空き0かつ理由は STAFF_UNAVAILABLE（満席ではない。実際には予約が1件も入っていない）。
+        staffRemaining = 0;
+        staffReasonFail = true;
       } else {
-        // スタッフ不要サービス
+        // 本当にスタッフ不要なサービス
         staffRemaining = Number.POSITIVE_INFINITY;
       }
 

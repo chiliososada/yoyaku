@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { computeAvailability } from '@/domain/booking/availability';
+import { DEFAULT_RULES } from '@/domain/booking/rules';
+import { zonedDateMinutesToUtc } from '@/lib/time';
 import { singleSegment } from '@/domain/booking/occupancy';
 import type { AvailabilityInput, OccupiedInterval, StaffWorkingInterval } from '@/domain/booking/types';
 
@@ -127,5 +129,51 @@ describe('availability: スタッフ制約', () => {
     )!;
     expect(nine.available).toBe(true);
     expect(nine.remaining).toBe(1); // s2 のみ空き
+  });
+});
+
+/**
+ * 「担当が必要なのに候補0人」を「スタッフ不要」と同一視すると、
+ * 全枠が「空きあり」に見えて**確定ボタンでだけ失敗**する（客も店主も原因が分からない）。
+ * 候補0人になる経路は複数ある: 担当チェックを外す / 指名不可にする / 停止中にする /
+ * コンボで共通担当が居ない、など。エンジン側で必ず塞ぐ。
+ */
+describe('availability: 担当必須なのに候補0人', () => {
+  const base = {
+    serviceId: 'svc1',
+    date: '2026-09-07',
+    timeZone: 'Asia/Tokyo',
+    dayStatus: 'OPEN' as const,
+    segments: [{ offsetMin: 0, durationMin: 60 }],
+    bufferBeforeMin: 0,
+    bufferAfterMin: 0,
+    rules: { ...DEFAULT_RULES, slotIntervalMin: 60, shopCapacity: 5, serviceCapacity: 5, staffCapacity: 1 },
+    staffId: null,
+    staffWorkingIntervals: [],
+    occupied: [],
+    now: new Date('2026-09-01T00:00:00Z'),
+    openIntervals: [
+      { start: zonedDateMinutesToUtc('2026-09-07', 600, 'Asia/Tokyo'), end: zonedDateMinutesToUtc('2026-09-07', 780, 'Asia/Tokyo') },
+    ],
+  };
+
+  it('requiresStaff=true・候補0人 → 全枠が予約不可で理由は STAFF_UNAVAILABLE', () => {
+    const slots = computeAvailability({ ...base, candidateStaffIds: [], requiresStaff: true });
+    expect(slots.length).toBeGreaterThan(0);
+    expect(slots.every((s) => !s.available)).toBe(true);
+    // 「満席」ではない。実際には予約が1件も入っていないため SLOT_FULL は事実と違う
+    expect(slots.every((s) => s.reason === 'STAFF_UNAVAILABLE')).toBe(true);
+    expect(slots.some((s) => s.reason === 'SLOT_FULL')).toBe(false);
+  });
+
+  it('requiresStaff=false（スタッフ不要サービス）は従来どおり予約可', () => {
+    const slots = computeAvailability({ ...base, candidateStaffIds: [], requiresStaff: false });
+    expect(slots.length).toBeGreaterThan(0);
+    expect(slots.every((s) => s.available)).toBe(true);
+  });
+
+  it('requiresStaff 未指定でも従来挙動を壊さない（後方互換）', () => {
+    const slots = computeAvailability({ ...base, candidateStaffIds: [] });
+    expect(slots.every((s) => s.available)).toBe(true);
   });
 });

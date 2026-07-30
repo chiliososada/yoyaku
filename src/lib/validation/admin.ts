@@ -189,6 +189,13 @@ export const capacityRuleSchema = z.object({
 export type CapacityRuleInput = z.infer<typeof capacityRuleSchema>;
 
 // ---- スタッフシフト ----
+/**
+ * スタッフの曜日シフト。businessHoursSchema と**同じ壊れ方**をするので同じ守り方をする:
+ *  - 終了 <= 開始 … 静かに捨てられるとその曜日だけ出勤が消え、原因が分からない
+ *  - 同一曜日の重なり … resolveStaffWorkingIntervals は行ごとに区間を積むだけで連結しないため、
+ *    isWorkingDuring（1本の区間が施術全体を覆うことを要求）が継ぎ目をまたぐ長いメニューを弾く。
+ *    店主から見ると「10-15と14-19を入れたのに、60分メニューだけ予約できない」ように見える。
+ */
 export const staffScheduleSchema = z.object({
   rows: z
     .array(
@@ -199,6 +206,39 @@ export const staffScheduleSchema = z.object({
       }),
     )
     .max(50),
+}).superRefine((val, ctx) => {
+  val.rows.forEach((r, i) => {
+    if (r.endMinute <= r.startMinute) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['rows', i, 'endMinute'],
+        message: `${DOW_LABEL[r.dayOfWeek]}曜: 終了時刻は開始時刻より後にしてください。`,
+      });
+    }
+  });
+  const byDay = new Map<number, Array<{ i: number; s: number; e: number }>>();
+  val.rows.forEach((r, i) => {
+    if (r.endMinute <= r.startMinute) return;
+    const list = byDay.get(r.dayOfWeek) ?? [];
+    list.push({ i, s: r.startMinute, e: r.endMinute });
+    byDay.set(r.dayOfWeek, list);
+  });
+  for (const [dow, list] of byDay) {
+    list.sort((a, b) => a.s - b.s);
+    for (let k = 1; k < list.length; k++) {
+      const prev = list[k - 1]!;
+      const cur = list[k]!;
+      if (cur.s < prev.e) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['rows', cur.i, 'startMinute'],
+          message:
+            `${DOW_LABEL[dow]}曜のシフトが重なっています（${hhmm(prev.s)}〜${hhmm(prev.e)} と ` +
+            `${hhmm(cur.s)}〜${hhmm(cur.e)}）。休憩を挟む場合は重ならないように分けてください。`,
+        });
+      }
+    }
+  }
 });
 export type StaffScheduleInput = z.infer<typeof staffScheduleSchema>;
 

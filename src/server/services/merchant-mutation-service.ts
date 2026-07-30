@@ -477,7 +477,14 @@ async function assertStaffInShop(tenantId: string, shopId: string, staffId: stri
 /** スタッフの曜日シフト（RECURRING）を全置換。 */
 export async function replaceStaffRecurringSchedule(tenantId: string, shopId: string, staffId: string, input: StaffScheduleInput) {
   await assertStaffInShop(tenantId, shopId, staffId);
-  const rows = input.rows.filter((r) => r.endMinute > r.startMinute);
+  // 黙って捨てない（API 直叩き対策）。捨てるとその曜日の出勤が理由不明で消える。
+  const bad = input.rows.find((r) => r.endMinute <= r.startMinute);
+  if (bad) {
+    throw Errors.validation(
+      `${['日', '月', '火', '水', '木', '金', '土'][bad.dayOfWeek]}曜: 終了時刻は開始時刻より後にしてください。`,
+    );
+  }
+  const rows = input.rows;
   return prisma.$transaction(async (tx) => {
     await tx.staffSchedule.deleteMany({ where: { staffId, type: 'RECURRING' } });
     if (rows.length > 0) {
@@ -526,7 +533,15 @@ export async function updateCustomerNote(tenantId: string, customerId: string, n
 // ---- 営業時間（全置換） ----
 export async function replaceBusinessHours(tenantId: string, shopId: string, input: BusinessHoursInput) {
   await assertShopInTenant(tenantId, shopId);
-  const rows = input.rows.filter((r) => r.closeMinute > r.openMinute);
+  // 不正行を黙って捨てない（API 直叩き対策）。捨てると保存は成功したように見えて
+  // その曜日だけが理由不明で定休になり、店主が原因に辿り着けない。
+  const invalid = input.rows.find((r) => r.closeMinute <= r.openMinute);
+  if (invalid) {
+    throw Errors.validation(
+      `${['日', '月', '火', '水', '木', '金', '土'][invalid.dayOfWeek]}曜: 終了時刻は開始時刻より後にしてください。`,
+    );
+  }
+  const rows = input.rows;
   return prisma.$transaction(async (tx) => {
     await tx.businessHours.deleteMany({ where: { shopId } });
     if (rows.length > 0) {

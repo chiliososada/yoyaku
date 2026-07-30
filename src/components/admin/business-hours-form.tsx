@@ -42,9 +42,15 @@ export function BusinessHoursForm({ shopId, initial }: { shopId: string; initial
   const onSubmit = async (data: FormShape) => {
     setServerError(null);
     setSaved(false);
-    const rows = data.rows
-      .map((r) => ({ dayOfWeek: Number(r.dayOfWeek), openMinute: hhmmToMinutes(r.open), closeMinute: hhmmToMinutes(r.close) }))
-      .filter((r) => r.closeMinute > r.openMinute);
+    // ここで不正行を filter で捨ててはいけない。
+    // 捨てると「保存しました」だけが出て、入力した行が画面に残ったまま DB からは消え、
+    // その曜日が理由の説明もなく定休になる（店主は原因に辿り着けない）。
+    // サーバー側の検証にそのまま渡し、曜日つきのエラー文を出す。
+    const rows = data.rows.map((r) => ({
+      dayOfWeek: Number(r.dayOfWeek),
+      openMinute: hhmmToMinutes(r.open),
+      closeMinute: hhmmToMinutes(r.close),
+    }));
     const res = await replaceBusinessHoursAction(shopId, { rows });
     if (!res.ok) {
       setServerError(res.error);
