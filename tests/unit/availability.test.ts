@@ -229,7 +229,6 @@ describe('availability: 空き0の理由を取り違えない', () => {
     ];
     const occupied: OccupiedInterval[] = [
       {
-        bookingId: 'b1',
         serviceId: 'svc1',
         staffId: 's1',
         start: d('2026-06-15T00:00:00Z'),

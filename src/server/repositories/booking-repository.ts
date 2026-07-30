@@ -12,6 +12,7 @@ import type {
 import type { ScheduleRow } from '@/domain/booking/schedules';
 import type { BusinessHoursRow, SpecialDayInput } from '@/domain/booking/business-hours';
 import { zonedDateString } from '@/lib/time';
+import { isJpHoliday, jpHolidaysInRange } from '@/lib/jp-holidays';
 
 export interface CapacityRuleRow {
   scope: 'SHOP' | 'SERVICE' | 'STAFF';
@@ -198,7 +199,10 @@ export async function loadDayContext(
 ): Promise<DayContext> {
   const dateObj = new Date(`${date}T00:00:00.000Z`);
 
-  const [businessHours, special, holiday, schedules] = await Promise.all([
+  // 祝日は法令から算出する（テーブルに入れた年を過ぎると黙って効かなくなるため）
+  const isNationalHoliday = isJpHoliday(date);
+
+  const [businessHours, special, schedules] = await Promise.all([
     db.businessHours.findMany({
       where: { shopId },
       select: { dayOfWeek: true, openMinute: true, closeMinute: true },
@@ -206,10 +210,6 @@ export async function loadDayContext(
     db.specialBusinessDay.findFirst({
       where: { shopId, date: dateObj },
       select: { type: true, openMinute: true, closeMinute: true },
-    }),
-    db.holiday.findFirst({
-      where: { type: 'NATIONAL', date: dateObj },
-      select: { id: true },
     }),
     staffIds.length > 0
       ? db.staffSchedule.findMany({
@@ -236,7 +236,7 @@ export async function loadDayContext(
     specialDay: special
       ? { type: special.type, openMinute: special.openMinute, closeMinute: special.closeMinute }
       : null,
-    isNationalHoliday: Boolean(holiday),
+    isNationalHoliday,
     schedules: schedules.map((s) => ({
       staffId: s.staffId,
       type: s.type,
@@ -308,7 +308,7 @@ export async function loadRangeContext(
   toDateObj: Date,
   staffIds: string[],
 ): Promise<RangeContext> {
-  const [businessHours, specials, holidays, schedules] = await Promise.all([
+  const [businessHours, specials, schedules] = await Promise.all([
     db.businessHours.findMany({
       where: { shopId },
       select: { dayOfWeek: true, openMinute: true, closeMinute: true },
@@ -316,10 +316,6 @@ export async function loadRangeContext(
     db.specialBusinessDay.findMany({
       where: { shopId, date: { gte: fromDateObj, lt: toDateObj } },
       select: { date: true, type: true, openMinute: true, closeMinute: true },
-    }),
-    db.holiday.findMany({
-      where: { type: 'NATIONAL', date: { gte: fromDateObj, lt: toDateObj } },
-      select: { date: true },
     }),
     staffIds.length > 0
       ? db.staffSchedule.findMany({
@@ -349,7 +345,12 @@ export async function loadRangeContext(
       closeMinute: s.closeMinute,
     });
   }
-  const holidayDates = new Set(holidays.map((h) => zonedDateString(h.date, 'UTC')));
+  // 祝日は法令から算出（[from, to) の半開区間で取得）
+  const holidayDates = new Set(
+    jpHolidaysInRange(zonedDateString(fromDateObj, 'UTC'), zonedDateString(toDateObj, 'UTC')).map(
+      (h) => h.date,
+    ),
+  );
   const recurringSchedules: ScheduleRow[] = [];
   const overridesByDate = new Map<string, ScheduleRow[]>();
   for (const s of schedules) {

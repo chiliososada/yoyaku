@@ -27,28 +27,6 @@ const SEED_DEMO = process.env.SEED_DEMO !== 'false';
 const PLATFORM_ADMIN_EMAIL = process.env.PLATFORM_ADMIN_EMAIL ?? 'admin@platform.test';
 const PLATFORM_ADMIN_PASSWORD = process.env.PLATFORM_ADMIN_PASSWORD ?? DEMO_PASSWORD;
 
-// 2026 年 日本の祝日
-const HOLIDAYS_2026: { date: string; name: string }[] = [
-  { date: '2026-01-01', name: '元日' },
-  { date: '2026-01-12', name: '成人の日' },
-  { date: '2026-02-11', name: '建国記念の日' },
-  { date: '2026-02-23', name: '天皇誕生日' },
-  { date: '2026-03-20', name: '春分の日' },
-  { date: '2026-04-29', name: '昭和の日' },
-  { date: '2026-05-03', name: '憲法記念日' },
-  { date: '2026-05-04', name: 'みどりの日' },
-  { date: '2026-05-05', name: 'こどもの日' },
-  { date: '2026-05-06', name: '振替休日' },
-  { date: '2026-07-20', name: '海の日' },
-  { date: '2026-08-11', name: '山の日' },
-  { date: '2026-09-21', name: '敬老の日' },
-  { date: '2026-09-22', name: '国民の休日' },
-  { date: '2026-09-23', name: '秋分の日' },
-  { date: '2026-10-12', name: 'スポーツの日' },
-  { date: '2026-11-03', name: '文化の日' },
-  { date: '2026-11-23', name: '勤労感謝の日' },
-];
-
 function dateOnly(d: string): Date {
   return new Date(`${d}T00:00:00.000Z`);
 }
@@ -112,20 +90,6 @@ async function seedPlans() {
   for (const p of plans) {
     await prisma.plan.upsert({ where: { code: p.code }, update: p, create: p });
   }
-}
-
-async function seedHolidays() {
-  console.log('· 2026年の祝日を投入...');
-  await prisma.holiday.deleteMany({ where: { type: 'NATIONAL', country: 'JP', shopId: null } });
-  await prisma.holiday.createMany({
-    data: HOLIDAYS_2026.map((h) => ({
-      date: dateOnly(h.date),
-      name: h.name,
-      type: 'NATIONAL' as const,
-      country: 'JP',
-    })),
-    skipDuplicates: true,
-  });
 }
 
 async function seedPlatformAdmin() {
@@ -415,7 +379,6 @@ async function main() {
   console.log(`🌱 seeding... (SEED_DEMO=${SEED_DEMO})`);
   await seedPermissionsAndRoles();
   await seedPlans();
-  await seedHolidays();
   await seedPlatformAdmin();
   if (SEED_DEMO) {
     await seedDemoTenant();

@@ -716,7 +716,10 @@ model StaffSchedule {
   @@map("staff_schedules")
 }
 
-/// 祝日カレンダー。NATIONAL は参照用（tenantId/shopId=null）。
+/// 祝日カレンダー。
+/// **非推奨**: 国民の祝日は `src/lib/jp-holidays.ts` で法令から算出するようになったため、
+/// このテーブルはどこからも読まれていない（手入力した年を過ぎると祝日休業が黙って
+/// 効かなくなる事故を無くすための変更）。既存行の削除・テーブル削除は別途行う。
 model Holiday {
   id        String      @id @default(cuid())
   tenantId  String?

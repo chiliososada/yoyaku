@@ -1,6 +1,6 @@
 import { requireTenantUser } from '@/server/auth/authorize';
 import { getPrimaryShop, getShopConfig } from '@/server/services/merchant-service';
-import { prisma } from '@/lib/db';
+import { jpHolidaysFrom } from '@/lib/jp-holidays';
 import { PageHeader, Panel, Table, Th, Td, EmptyState, StatusPill } from '@/components/admin/ui';
 import { SpecialDayForm } from '@/components/admin/special-day-form';
 import { DeleteSpecialDayButton } from '@/components/admin/delete-buttons';
@@ -20,12 +20,8 @@ export default async function CalendarPage() {
   const { specialDays, shop: shopConfig } = await getShopConfig(user.tenantId, shop.id);
 
   const today = todayInZone(shop.timezone);
-  const holidays = await prisma.holiday.findMany({
-    where: { type: 'NATIONAL', date: { gte: new Date(`${today}T00:00:00.000Z`) } },
-    orderBy: { date: 'asc' },
-    take: 8,
-    select: { id: true, date: true, name: true },
-  });
+  // 祝日は法令から算出。年をまたいでも一覧が空にならない（＝設定が黙って効かなくなる事故を防ぐ）
+  const holidays = jpHolidaysFrom(today, 8);
 
   return (
     <div className="grid gap-6">
@@ -73,8 +69,8 @@ export default async function CalendarPage() {
       <Panel title={`祝日（${shopConfig.closeOnNationalHolidays ? '休業' : '営業'}）`}>
         <ul className="grid gap-1.5 text-sm sm:grid-cols-2">
           {holidays.map((h) => (
-            <li key={h.id} className="flex justify-between border-b py-1.5 last:border-0">
-              <span className="tabular-nums text-muted-foreground">{zonedDateString(h.date, 'UTC')}</span>
+            <li key={h.date} className="flex justify-between border-b py-1.5 last:border-0">
+              <span className="tabular-nums text-muted-foreground">{h.date}</span>
               <span className="font-medium">{h.name}</span>
             </li>
           ))}
