@@ -49,6 +49,9 @@ function makeHp(overrides: Partial<PublicHomepage> = {}): PublicHomepage {
       { dayOfWeek: 1, openMinute: 600, closeMinute: 1140 },
       { dayOfWeek: 2, openMinute: 600, closeMinute: 1140 },
     ],
+    closeOnNationalHolidays: false,
+    specialDays: [],
+    upcomingHolidays: [],
     services: [
       { id: 'sv1', name: 'カット', description: null, category: 'ヘア', durationMin: 60, priceJpy: 5000, salePriceJpy: null },
       { id: 'sv2', name: 'カラー', description: null, category: 'ヘア', durationMin: 90, priceJpy: 12000, salePriceJpy: 9000 },
@@ -124,5 +127,61 @@ describe('homepage-seo helpers', () => {
     expect(spec[0]!.dayOfWeek).toEqual(['Monday', 'Tuesday']);
     expect(spec[0]!.opens).toBe('10:00');
     expect(spec[0]!.closes).toBe('19:00');
+  });
+});
+
+describe('buildJsonLd: 休業情報を検索結果へ反映する', () => {
+  it('祝日休業ONなら PublicHolidays を 00:00-00:00 で出す', () => {
+    const ld = buildJsonLd(makeHp({ closeOnNationalHolidays: true }), 'https://example.com') as {
+      openingHoursSpecification: { dayOfWeek: string[]; opens: string; closes: string }[];
+    };
+    const ph = ld.openingHoursSpecification.find((o) =>
+      o.dayOfWeek.includes('https://schema.org/PublicHolidays'),
+    );
+    expect(ph).toBeTruthy();
+    expect(ph!.opens).toBe('00:00');
+    expect(ph!.closes).toBe('00:00');
+  });
+
+  it('祝日休業OFFなら PublicHolidays を出さない', () => {
+    const ld = buildJsonLd(makeHp({ closeOnNationalHolidays: false }), 'https://example.com') as {
+      openingHoursSpecification: { dayOfWeek: string[] }[];
+    };
+    expect(
+      ld.openingHoursSpecification.some((o) => o.dayOfWeek.includes('https://schema.org/PublicHolidays')),
+    ).toBe(false);
+  });
+
+  it('臨時休業は specialOpeningHoursSpecification に日付付きで出る', () => {
+    const ld = buildJsonLd(
+      makeHp({
+        specialDays: [
+          { date: '2026-08-13', type: 'CLOSED', openMinute: null, closeMinute: null, reason: 'お盆休み' },
+          { date: '2026-08-20', type: 'MODIFIED_HOURS', openMinute: 660, closeMinute: 900, reason: null },
+        ],
+      }),
+      'https://example.com',
+    ) as {
+      specialOpeningHoursSpecification: {
+        validFrom: string;
+        validThrough: string;
+        opens: string;
+        closes: string;
+      }[];
+    };
+    expect(ld.specialOpeningHoursSpecification).toHaveLength(2);
+    const closed = ld.specialOpeningHoursSpecification[0]!;
+    expect(closed.validFrom).toBe('2026-08-13');
+    expect(closed.validThrough).toBe('2026-08-13');
+    expect(closed.opens).toBe('00:00');
+    expect(closed.closes).toBe('00:00');
+    const modified = ld.specialOpeningHoursSpecification[1]!;
+    expect(modified.opens).toBe('11:00');
+    expect(modified.closes).toBe('15:00');
+  });
+
+  it('特別な日が無ければキーごと出さない', () => {
+    const ld = buildJsonLd(makeHp(), 'https://example.com');
+    expect('specialOpeningHoursSpecification' in ld).toBe(false);
   });
 });

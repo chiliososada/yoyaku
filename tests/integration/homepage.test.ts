@@ -6,6 +6,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { prisma } from '@/lib/db';
 import {
   getHomepageForEditor,
+  getHomepagePreview,
   getPublicHomepage,
   listPublishedHomepageSlugs,
   saveHomepage,
@@ -147,5 +148,59 @@ describe('shop homepage service', () => {
     expect(await getPublicHomepage(slug)).toBeNull();
     await prisma.shop.update({ where: { id: shopId }, data: { status: 'PUBLISHED' } });
     expect(await getPublicHomepage(slug)).not.toBeNull();
+  });
+});
+
+describe('休業情報がホームページ側にも届く', () => {
+  it('祝日休業ONなら closeOnNationalHolidays と直近の祝日が返る', async () => {
+    await prisma.shop.update({ where: { id: shopId }, data: { closeOnNationalHolidays: true } });
+    await saveHomepage(tenantId, shopId, input());
+    const hp = await getPublicHomepage(slug);
+    expect(hp!.closeOnNationalHolidays).toBe(true);
+    // 60日以内に祝日が1つも無い期間は日本には存在しないため、必ず1件以上返る
+    expect(hp!.upcomingHolidays.length).toBeGreaterThan(0);
+  });
+
+  it('祝日休業OFFなら祝日一覧は空（営業しているので出す必要がない）', async () => {
+    await prisma.shop.update({ where: { id: shopId }, data: { closeOnNationalHolidays: false } });
+    const hp = await getPublicHomepage(slug);
+    expect(hp!.closeOnNationalHolidays).toBe(false);
+    expect(hp!.upcomingHolidays).toEqual([]);
+  });
+
+  it('直近の臨時休業が specialDays に載る（過去分は載らない）', async () => {
+    const day = (offset: number) =>
+      new Date(new Date().getTime() + offset * 86_400_000).toISOString().slice(0, 10);
+    const soon = day(10);
+    const past = day(-10);
+    for (const [date, reason] of [
+      [soon, '研修のため'],
+      [past, '過去の休業'],
+    ] as const) {
+      await prisma.specialBusinessDay.create({
+        data: { tenantId, shopId, date: new Date(`${date}T00:00:00.000Z`), type: 'CLOSED', reason },
+      });
+    }
+    const hp = await getPublicHomepage(slug);
+    const dates = hp!.specialDays.map((s) => s.date);
+    expect(dates).toContain(soon);
+    expect(dates).not.toContain(past);
+  });
+});
+
+describe('下書きプレビュー（未公開でも見られる）', () => {
+  it('homepageEnabled=false でもプレビューは中身を返す', async () => {
+    await saveHomepage(tenantId, shopId, input({ homepageEnabled: false, tagline: '下書き中' }));
+    expect(await getPublicHomepage(slug)).toBeNull();
+    const hp = await getHomepagePreview(tenantId, shopId);
+    expect(hp).not.toBeNull();
+    expect(hp!.preview).toBe(true);
+    expect(hp!.profile.tagline).toBe('下書き中');
+  });
+
+  it('他テナントの店舗は覗けない', async () => {
+    const other = await seedScenario({ staffCount: 1 });
+    createdTenants.push(other.tenantId);
+    expect(await getHomepagePreview(other.tenantId, shopId)).toBeNull();
   });
 });

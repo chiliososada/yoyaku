@@ -28,6 +28,7 @@ export default async function HomepagePage() {
         slug={s.slug}
         publicUrl={publicUrl}
         shopPublished={s.status === 'PUBLISHED'}
+        bookingEnabled={s.publicBookingEnabled}
         initial={initial}
       />
     </div>

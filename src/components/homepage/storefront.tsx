@@ -3,7 +3,7 @@
 // 公開ホームページ（SEO）本体。完全サーバーレンダリング。テーマカラーで装飾を統一。
 import { CalendarCheck, Clock, Globe, Instagram, MapPin, MessageCircle, Phone } from 'lucide-react';
 import type { PublicHomepage } from '@/server/services/shop-homepage-service';
-import { DAY_JP, addressLine, formatYen, groupHours } from '@/lib/homepage-seo';
+import { DAY_JP, addressLine, formatYen, groupHours, minutesToHHMM } from '@/lib/homepage-seo';
 
 const DEFAULT_BRAND = '#4f46e5';
 
@@ -17,6 +17,14 @@ function readableText(hex: string): string {
   const b = n & 255;
   const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
   return lum > 0.62 ? '#0f172a' : '#ffffff';
+}
+
+const NOTICE_DOW = ['日', '月', '火', '水', '木', '金', '土'];
+
+/** YYYY-MM-DD → 「1月5日(月)」。曜日まで出さないと客が日付を読み違える。 */
+function formatNoticeDate(date: string): string {
+  const dt = new Date(`${date}T00:00:00Z`);
+  return `${dt.getUTCMonth() + 1}月${dt.getUTCDate()}日(${NOTICE_DOW[dt.getUTCDay()]})`;
 }
 
 function telHref(phone: string): string {
@@ -37,6 +45,28 @@ export function Storefront({ hp }: Props) {
   const bookHref = `/book/${hp.slug}`;
   const hours = groupHours(hp.hours);
 
+  // 営業時間表だけを信じて来店した客が閉まった店の前に立つ——を防ぐ。
+  // 祝日休業の設定と、直近の臨時休業・特別営業をページ上に必ず出す。
+  const notices = [
+    ...hp.specialDays.map((sp) => ({
+      date: sp.date,
+      label:
+        sp.type === 'CLOSED'
+          ? '休業'
+          : sp.openMinute != null && sp.closeMinute != null
+            ? `${minutesToHHMM(sp.openMinute)}〜${minutesToHHMM(sp.closeMinute)}`
+            : '営業',
+      closed: sp.type === 'CLOSED',
+      note: sp.reason,
+    })),
+    // 祝日休業の店では祝日も「その日は閉まっている」情報として並べる
+    ...hp.upcomingHolidays
+      .filter((h) => !hp.specialDays.some((sp) => sp.date === h.date))
+      .map((h) => ({ date: h.date, label: '休業', closed: true, note: h.name })),
+  ]
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+    .slice(0, 8);
+
   const sns = (
     [
       p.instagramUrl && { href: p.instagramUrl, icon: Instagram, label: 'Instagram' },
@@ -53,6 +83,12 @@ export function Storefront({ hp }: Props) {
 
   return (
     <div className="min-h-screen bg-white text-slate-800">
+      {/* 管理画面からの下書きプレビュー。公開ページには出ない。 */}
+      {hp.preview && (
+        <div className="sticky top-0 z-50 bg-amber-400 px-4 py-2 text-center text-sm font-medium text-amber-950">
+          プレビュー表示中です。この内容はまだ公開されていません。
+        </div>
+      )}
       {/* Header */}
       <header className="sticky top-0 z-40 border-b border-slate-100 bg-white/85 backdrop-blur">
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-3">
@@ -299,6 +335,25 @@ export function Storefront({ hp }: Props) {
                   </tbody>
                 </table>
               </div>
+              {hp.closeOnNationalHolidays && (
+                <p className="pl-8 text-sm text-slate-500">※ 祝日は休業いたします。</p>
+              )}
+              {notices.length > 0 && (
+                <div className="rounded-xl border border-slate-100 bg-slate-50/70 p-4">
+                  <div className="text-sm font-bold text-slate-700">直近の休業・営業時間のお知らせ</div>
+                  <ul className="mt-2 space-y-1 text-sm">
+                    {notices.map((n) => (
+                      <li key={`${n.date}-${n.label}`} className="flex flex-wrap items-baseline gap-x-3">
+                        <span className="tabular-nums text-slate-500">{formatNoticeDate(n.date)}</span>
+                        <span className={n.closed ? 'font-medium text-rose-600' : 'font-medium text-slate-800'}>
+                          {n.label}
+                        </span>
+                        {n.note && <span className="text-slate-400">{n.note}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
             {addr && (
               <div className="overflow-hidden rounded-2xl border border-slate-100">

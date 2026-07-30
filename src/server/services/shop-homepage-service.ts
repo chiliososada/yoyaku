@@ -6,6 +6,8 @@
  */
 import { prisma } from '@/lib/db';
 import { Errors } from '@/lib/errors';
+import { jpHolidaysInRange } from '@/lib/jp-holidays';
+import { todayInZone } from '@/lib/time';
 import { deleteImage } from '@/server/uploads';
 import type { ShopHomepageInput } from '@/lib/validation/admin';
 
@@ -149,6 +151,15 @@ export interface PublicHomepageService {
   priceJpy: number;
   salePriceJpy: number | null;
 }
+/** 直近の臨時休業・特別営業（ホームページの「お知らせ」と JSON-LD に使う）。 */
+export interface PublicHomepageSpecialDay {
+  /** YYYY-MM-DD */
+  date: string;
+  type: 'CLOSED' | 'SPECIAL_OPEN' | 'MODIFIED_HOURS';
+  openMinute: number | null;
+  closeMinute: number | null;
+  reason: string | null;
+}
 export interface PublicHomepageStaff {
   id: string;
   name: string;
@@ -190,9 +201,37 @@ export interface PublicHomepage {
     seoDescription: string | null;
   };
   hours: PublicHomepageHour[];
+  /** 祝日を休業にする設定。営業時間表と JSON-LD の双方に反映する。 */
+  closeOnNationalHolidays: boolean;
+  /** 今日から60日先までの臨時休業・特別営業（日付昇順） */
+  specialDays: PublicHomepageSpecialDay[];
+  /** 今日から60日先までの祝日（祝日休業の店で「この日は休み」を出すため） */
+  upcomingHolidays: { date: string; name: string }[];
   services: PublicHomepageService[];
   staff: PublicHomepageStaff[];
+  /** 管理画面からの下書きプレビューか（公開ページでは false） */
+  preview?: boolean;
 }
+
+/** お知らせに出す先読み日数。長すぎると「まだ先の話」が並んで邪魔になる。 */
+const NOTICE_DAYS = 60;
+
+const SHOP_SELECT = {
+  id: true,
+  tenantId: true,
+  slug: true,
+  name: true,
+  description: true,
+  phone: true,
+  postalCode: true,
+  prefecture: true,
+  city: true,
+  address: true,
+  timezone: true,
+  publicBookingEnabled: true,
+  closeOnNationalHolidays: true,
+  profile: true,
+} as const;
 
 /**
  * 公開ホームページを slug から解決。公開（PUBLISHED）かつ homepageEnabled のみ。
@@ -201,31 +240,97 @@ export interface PublicHomepage {
 export async function getPublicHomepage(slug: string): Promise<PublicHomepage | null> {
   const shop = await prisma.shop.findFirst({
     where: { slug, status: 'PUBLISHED', deletedAt: null, profile: { homepageEnabled: true } },
-    select: {
-      id: true,
-      tenantId: true,
-      slug: true,
-      name: true,
-      description: true,
-      phone: true,
-      postalCode: true,
-      prefecture: true,
-      city: true,
-      address: true,
-      publicBookingEnabled: true,
-      profile: true,
-    },
+    select: SHOP_SELECT,
   });
   if (!shop || !shop.profile) return null;
-  const p = shop.profile;
+  return buildHomepage(shop, false);
+}
+
+/**
+ * 管理画面からの下書きプレビュー。**公開状態を問わず**同じ見た目で描画する。
+ *
+ * 「プレビュー」が未公開だと 404 になっていたため、店主は自分のページを一度も見ないまま
+ * 公開ボタンを押すしかなかった（しかも404の理由がどこにも書かれていない）。
+ * ここはテナント内から shopId で引くので、他店の下書きは覗けない。
+ */
+export async function getHomepagePreview(
+  tenantId: string,
+  shopId: string,
+): Promise<PublicHomepage | null> {
+  const shop = await prisma.shop.findFirst({
+    where: { id: shopId, tenantId, deletedAt: null },
+    select: SHOP_SELECT,
+  });
+  if (!shop) return null;
+  return buildHomepage(shop, true);
+}
+
+type ProfileFields = PublicHomepage['profile'];
+type ShopRow = {
+  id: string;
+  tenantId: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  phone: string | null;
+  postalCode: string | null;
+  prefecture: string | null;
+  city: string | null;
+  address: string | null;
+  timezone: string;
+  publicBookingEnabled: boolean;
+  closeOnNationalHolidays: boolean;
+  /** gallery は Prisma の Json 列なので unknown で受け、toGallery で正規化する */
+  profile: (Omit<ProfileFields, 'gallery'> & { gallery: unknown }) | null;
+};
+
+/** プレビューではプロフィール未作成でも描画できるよう既定値で埋める */
+const EMPTY_PROFILE: ProfileFields & { gallery: string[] } = {
+  tagline: null,
+  about: null,
+  businessType: 'HealthAndBeautyBusiness',
+  heroImageKey: null,
+  logoImageKey: null,
+  gallery: [],
+  accessNote: null,
+  themeColor: null,
+  instagramUrl: null,
+  lineUrl: null,
+  xUrl: null,
+  websiteUrl: null,
+  showMenu: true,
+  showStaff: true,
+  showGallery: true,
+  showAddress: true,
+  seoTitle: null,
+  seoDescription: null,
+};
+
+async function buildHomepage(shop: ShopRow, preview: boolean): Promise<PublicHomepage> {
+  const p = shop.profile ?? EMPTY_PROFILE;
   // 住所非公開時はサーバー側で落とす（HTML/JSON-LD/OG のどこにも漏れない）
   const showAddress = p.showAddress;
 
-  const [hours, services, staff] = await Promise.all([
+  // 今日〜60日先の臨時休業/特別営業と祝日。営業時間表だけを見て来店した客が
+  // 閉まった店の前に立つ——を防ぐため、ホームページ側にも必ず出す。
+  const today = todayInZone(shop.timezone);
+  const until = new Date(new Date(`${today}T00:00:00Z`).getTime() + NOTICE_DAYS * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+
+  const [hours, specials, services, staff] = await Promise.all([
     prisma.businessHours.findMany({
       where: { shopId: shop.id },
       orderBy: [{ dayOfWeek: 'asc' }, { openMinute: 'asc' }],
       select: { dayOfWeek: true, openMinute: true, closeMinute: true },
+    }),
+    prisma.specialBusinessDay.findMany({
+      where: {
+        shopId: shop.id,
+        date: { gte: new Date(`${today}T00:00:00.000Z`), lt: new Date(`${until}T00:00:00.000Z`) },
+      },
+      orderBy: { date: 'asc' },
+      select: { date: true, type: true, openMinute: true, closeMinute: true, reason: true },
     }),
     p.showMenu
       ? prisma.service.findMany({
@@ -284,8 +389,18 @@ export async function getPublicHomepage(slug: string): Promise<PublicHomepage | 
       seoDescription: p.seoDescription,
     },
     hours,
+    closeOnNationalHolidays: shop.closeOnNationalHolidays,
+    specialDays: specials.map((sp) => ({
+      date: sp.date.toISOString().slice(0, 10),
+      type: sp.type as PublicHomepageSpecialDay['type'],
+      openMinute: sp.openMinute,
+      closeMinute: sp.closeMinute,
+      reason: sp.reason,
+    })),
+    upcomingHolidays: shop.closeOnNationalHolidays ? jpHolidaysInRange(today, until) : [],
     services,
     staff,
+    ...(preview ? { preview: true } : {}),
   };
 }
 

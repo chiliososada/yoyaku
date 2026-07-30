@@ -109,6 +109,26 @@ export function buildJsonLd(hp: PublicHomepage, baseUrl: string): Record<string,
     const [opens, closes] = range.split('-');
     return { '@type': 'OpeningHoursSpecification', dayOfWeek: days, opens, closes };
   });
+  // 「祝日は休業」を検索結果にも反映する。ここを落とすと Google の営業時間表示だけが
+  // 開いていることになり、祝日に閉まった店の前へ客を送り込む。
+  if (hp.closeOnNationalHolidays) {
+    openingHoursSpecification.push({
+      '@type': 'OpeningHoursSpecification',
+      dayOfWeek: ['https://schema.org/PublicHolidays'],
+      opens: '00:00',
+      closes: '00:00',
+    });
+  }
+
+  // 臨時休業・特別営業は specialOpeningHoursSpecification（期間指定で通常営業時間を上書き）
+  const specialOpeningHoursSpecification = hp.specialDays.map((sp) => ({
+    '@type': 'OpeningHoursSpecification',
+    validFrom: sp.date,
+    validThrough: sp.date,
+    // 休業日は opens=closes=00:00 が schema.org の慣行
+    opens: sp.type === 'CLOSED' ? '00:00' : ldTime(sp.openMinute ?? 0),
+    closes: sp.type === 'CLOSED' ? '00:00' : ldTime(sp.closeMinute ?? 0),
+  }));
 
   const address = {
     '@type': 'PostalAddress',
@@ -131,6 +151,7 @@ export function buildJsonLd(hp: PublicHomepage, baseUrl: string): Record<string,
     ...(img ? { image: img } : {}),
     ...(addressLine(hp) ? { address } : {}),
     ...(openingHoursSpecification.length ? { openingHoursSpecification } : {}),
+    ...(specialOpeningHoursSpecification.length ? { specialOpeningHoursSpecification } : {}),
     ...(range ? { priceRange: range } : {}),
     ...(sameAs.length ? { sameAs } : {}),
     ...(hp.bookingEnabled ? { potentialAction: { '@type': 'ReserveAction', target: `${url}` } } : {}),

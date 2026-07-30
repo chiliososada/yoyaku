@@ -33,12 +33,14 @@ export function HomepageForm({
   slug,
   publicUrl,
   shopPublished,
+  bookingEnabled,
   initial,
 }: {
   shopId: string;
   slug: string;
   publicUrl: string;
   shopPublished: boolean;
+  bookingEnabled: boolean;
   initial: ShopHomepageInput;
 }) {
   const router = useRouter();
@@ -110,8 +112,9 @@ export function HomepageForm({
               {copied ? <Check className="size-4 text-green-600" /> : <Copy className="size-4" />}
               {copied ? 'コピー済み' : 'URLをコピー'}
             </button>
+            {/* 未公開のうちは /{slug} が 404 になるため、下書き用のプレビュー画面へ送る */}
             <a
-              href={`/${slug}`}
+              href={shopPublished && initial.homepageEnabled ? `/${slug}` : '/admin/homepage/preview'}
               target="_blank"
               rel="noreferrer"
               className="inline-flex items-center gap-1.5 rounded-md border bg-white px-3 py-2 text-sm hover:bg-slate-50"
@@ -130,6 +133,15 @@ export function HomepageForm({
         {enabled && !shopPublished && (
           <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
             公開するには「店舗設定」で店舗の公開状態を<strong>「公開」</strong>にする必要があります（現在は非公開）。
+          </p>
+        )}
+        {/* ホームページはONでもネット予約がOFFだと、予約ボタンの無いHPが公開される。
+            検索から来た客は予約手段が見つからず離脱するが、店主の画面には何も出ない。 */}
+        {enabled && shopPublished && !bookingEnabled && (
+          <p className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            「ネット予約」が<strong>停止中</strong>のため、ホームページに予約ボタンが表示されません。
+            紹介ページとして使う場合はこのままで構いません。予約も受け付ける場合は「店舗設定」で
+            ネット予約をONにしてください。
           </p>
         )}
       </div>
