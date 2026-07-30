@@ -219,3 +219,56 @@ describe('日付サマリ（○△× 用）', () => {
     expect(summary.every((d) => ['OPEN', 'FEW', 'FULL', 'CLOSED'].includes(d.status))).toBe(true);
   });
 });
+
+/**
+ * 締切（lead time）と受付期間（window）は「客がネットから駆け込み予約するのを防ぐ」ルール。
+ * 店主が電話を受けて今日の予約を入れる行為まで止めると日常業務が回らないため、
+ * 後台からの代理登録では適用しない。容量・防超卖は後台でも通常どおり効く。
+ */
+describe('後台の代理登録は締切に縛られない', () => {
+  it('締切（2時間前）を過ぎた枠でも ADMIN なら登録でき、PUBLIC は拒否される', async () => {
+    const sc = await seedScenario({ staffCount: 1, staffCapacity: 1, leadTimeMinHours: 2 });
+    createdTenants.push(sc.tenantId);
+
+    const slot = await firstAvailable(sc);
+    // 開始30分前 = 締切（2時間前）を過ぎた状態
+    const lateNow = new Date(slot.startAt.getTime() - 30 * 60 * 1000);
+
+    // 客のオンライン予約は締切超過で拒否される
+    await expect(
+      createBooking({
+        tenantId: sc.tenantId, shopId: sc.shopId, serviceId: sc.serviceId, staffId: null,
+        startAt: slot.startAt, customer: { name: '客', email: 'pub@test.com' },
+        source: 'PUBLIC', now: lateNow,
+      }),
+    ).rejects.toThrow();
+
+    // 店主の代理登録は通る（電話予約の受付）
+    const admin = await createBooking({
+      tenantId: sc.tenantId, shopId: sc.shopId, serviceId: sc.serviceId, staffId: null,
+      startAt: slot.startAt, customer: { name: '電話のお客様', phone: '090-0000-0000' },
+      source: 'ADMIN', now: lateNow,
+    });
+    expect(admin.status).toBe('CONFIRMED');
+  });
+
+  it('後台でも満席の枠には入れられない（容量は緩めない）', async () => {
+    const sc = await seedScenario({ staffCount: 1, staffCapacity: 1, shopCapacity: 1, serviceCapacity: 1 });
+    createdTenants.push(sc.tenantId);
+    const slot = await firstAvailable(sc);
+
+    await createBooking({
+      tenantId: sc.tenantId, shopId: sc.shopId, serviceId: sc.serviceId, staffId: null,
+      startAt: slot.startAt, customer: { name: '先客', email: 'first@test.com' },
+      source: 'ADMIN', now: NOW,
+    });
+    // 同じ枠に2件目 → 締切は緩めても容量は緩めない
+    await expect(
+      createBooking({
+        tenantId: sc.tenantId, shopId: sc.shopId, serviceId: sc.serviceId, staffId: null,
+        startAt: slot.startAt, customer: { name: '後客', email: 'second@test.com' },
+        source: 'ADMIN', now: NOW,
+      }),
+    ).rejects.toThrow();
+  });
+});

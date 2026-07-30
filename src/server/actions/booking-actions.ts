@@ -98,6 +98,8 @@ export async function rescheduleAvailabilityAction(
       staffId,
       date,
       excludeBookingId: bookingId,
+      // 後台からの代理改期。締切・受付期間は顧客向けのルールなので適用しない
+      enforceTimeRules: false,
     });
     return {
       dayStatus: result.dayStatus,
@@ -160,7 +162,12 @@ export async function adminAvailabilityAction(
     const user = await requirePermission(PERMISSIONS.BOOKING_READ);
     const tenantId = await tenantOf(user);
     assertShopAccess(user, shopId);
-    const result = await getDayAvailability({ tenantId, shopId, serviceId, staffId, date });
+    // 店主の代理登録では締切・受付期間を適用しない。
+    // 「13:30に電話が来て今日の14:00を入れたい」は毎日ある業務で、
+    // 客のネット駆け込みを防ぐためのルールでこれを止めると台帳が使えない。
+    const result = await getDayAvailability({
+      tenantId, shopId, serviceId, staffId, date, enforceTimeRules: false,
+    });
     return {
       dayStatus: result.dayStatus,
       slots: result.slots.map((s) => ({

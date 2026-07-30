@@ -233,6 +233,13 @@ export interface AvailabilityParams {
   date: string;
   /** 改期プレビュー用: この予約自身の占有を空き判定から除外 */
   excludeBookingId?: string;
+  /**
+   * 締切・受付期間を適用するか（既定 true）。
+   * 後台からの代理登録・代理改期では false。これらのルールは
+   * 「客がネットから駆け込み予約するのを防ぐ」ためのもので、
+   * 電話を受けた店主が今日の予約を入れる行為まで止めると業務が回らない。
+   */
+  enforceTimeRules?: boolean;
   now?: Date;
 }
 
@@ -308,6 +315,7 @@ export async function getDayAvailability(
     staffId,
     candidateStaffIds: combo.requiresStaff ? combo.candidateStaffIds : [],
       requiresStaff: combo.requiresStaff,
+      enforceTimeRules: params.enforceTimeRules,
     staffWorkingIntervals,
     occupied,
     now,
@@ -661,7 +669,9 @@ export async function createBooking(input: CreateBookingInput): Promise<CreateBo
           rules,
           staffId: staffIdReq,
           candidateStaffIds: combo.requiresStaff ? combo.candidateStaffIds : [],
-      requiresStaff: combo.requiresStaff,
+          requiresStaff: combo.requiresStaff,
+          // 後台（ADMIN）からの登録・改期では締切/受付期間を適用しない
+          enforceTimeRules: input.source !== 'ADMIN',
           staffWorkingIntervals,
           occupied,
           now,
@@ -1239,7 +1249,9 @@ export async function rescheduleBooking(input: RescheduleBookingInput): Promise<
           rules: combo.rules,
           staffId: staffIdReq,
           candidateStaffIds: combo.requiresStaff ? combo.candidateStaffIds : [],
-      requiresStaff: combo.requiresStaff,
+          requiresStaff: combo.requiresStaff,
+          // 後台（ADMIN）からの登録・改期では締切/受付期間を適用しない
+          enforceTimeRules: input.actorType !== 'USER',
           staffWorkingIntervals,
           occupied,
           now,

@@ -174,8 +174,10 @@ export function computeAvailability(input: AvailabilityInput): SlotAvailability[
       );
 
       // --- 時間制約 ---
-      const leadOk = satisfiesLeadTime(startAt, now, rules.leadTimeMinHours);
-      const windowOk = isWithinBookingWindow(startAt, now, rules.bookingWindowDays, input.timeZone);
+      // 後台の代理登録では時間ルールを適用しない（店主が電話予約を今日入れられるように）
+      const enforceTime = input.enforceTimeRules !== false;
+      const leadOk = !enforceTime || satisfiesLeadTime(startAt, now, rules.leadTimeMinHours);
+      const windowOk = !enforceTime || isWithinBookingWindow(startAt, now, rules.bookingWindowDays, input.timeZone);
 
       let available = true;
       let reason: SlotAvailability['reason'] | undefined;

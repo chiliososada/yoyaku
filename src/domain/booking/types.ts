@@ -125,4 +125,12 @@ export interface AvailabilityInput {
   occupied: OccupiedInterval[];
   /** 現在時刻（UTC、lead-time / window 判定用） */
   now: Date;
+  /**
+   * 締切（lead time）と受付期間（window）を適用するか。既定 true。
+   * false にするのは**店主自身が後台から代理登録する**とき。
+   * これらは「客がネットから駆け込み予約するのを防ぐ」ためのルールであり、
+   * 電話を受けた店主が今日の予約を入れる行為まで止めると、日常業務が回らない。
+   * 容量・防超卖・営業時間・スタッフ稼働の判定は false でも通常どおり効く。
+   */
+  enforceTimeRules?: boolean;
 }
