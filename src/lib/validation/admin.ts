@@ -217,12 +217,63 @@ export const staffOverrideSchema = z
 export type StaffOverrideInput = z.infer<typeof staffOverrideSchema>;
 
 // ---- 営業時間（曜日ごと複数区間） ----
+const DOW_LABEL = ['日', '月', '火', '水', '木', '金', '土'] as const;
+const hhmm = (min: number) => `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
+
 export const businessHourRowSchema = z.object({
   dayOfWeek: z.coerce.number().int().min(0).max(6),
   openMinute: z.coerce.number().int().min(0).max(1440),
   closeMinute: z.coerce.number().int().min(0).max(1440),
 });
+
+/**
+ * 営業時間。同じ曜日に複数行を置けるのは**昼休みなどの分割営業**のため（意図した機能）。
+ * ただし次の2つは弾く。どちらも「保存はできたのに結果が違う」という、
+ * 店主が自力で原因に辿り着けない壊れ方をするため:
+ *
+ *  1. 終了 <= 開始 … resolveOpenIntervalsForDate が `closeMinute > openMinute` で
+ *     静かに除外するので、その曜日が理由の説明もなく定休になる。
+ *  2. 同じ曜日の時間帯が重なる … computeAvailability は営業区間ごとに独立して
+ *     候補時刻を生成して連結するため、**顧客の予約画面に同じ時刻が2回並ぶ**。
+ *     日付の○△×の空き数も水増しされる（予約の二重確保は別途DB制約が防ぐので起きない）。
+ */
 export const businessHoursSchema = z.object({
   rows: z.array(businessHourRowSchema).max(50),
+}).superRefine((val, ctx) => {
+  val.rows.forEach((r, i) => {
+    if (r.closeMinute <= r.openMinute) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['rows', i, 'closeMinute'],
+        message: `${DOW_LABEL[r.dayOfWeek]}曜: 終了時刻は開始時刻より後にしてください。`,
+      });
+    }
+  });
+
+  // 曜日ごとに開始順へ並べ、隣接行の重なりを検出する
+  const byDay = new Map<number, Array<{ i: number; open: number; close: number }>>();
+  val.rows.forEach((r, i) => {
+    if (r.closeMinute <= r.openMinute) return; // 上で別途エラー済み
+    const list = byDay.get(r.dayOfWeek) ?? [];
+    list.push({ i, open: r.openMinute, close: r.closeMinute });
+    byDay.set(r.dayOfWeek, list);
+  });
+  for (const [dow, list] of byDay) {
+    list.sort((a, b) => a.open - b.open);
+    for (let k = 1; k < list.length; k++) {
+      const prev = list[k - 1]!;
+      const cur = list[k]!;
+      // 半開区間として扱う: 13:00終了 と 13:00開始 は重なりではない（連続営業）
+      if (cur.open < prev.close) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['rows', cur.i, 'openMinute'],
+          message:
+            `${DOW_LABEL[dow]}曜の時間帯が重なっています（${hhmm(prev.open)}〜${hhmm(prev.close)} と ` +
+            `${hhmm(cur.open)}〜${hhmm(cur.close)}）。昼休みを設ける場合は重ならないように分けてください。`,
+        });
+      }
+    }
+  }
 });
 export type BusinessHoursInput = z.infer<typeof businessHoursSchema>;

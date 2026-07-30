@@ -8,7 +8,7 @@ import {
   dateAvailabilityQuerySchema,
   createBookingSchema,
 } from '@/lib/validation/booking';
-import { serviceFormSchema, shopHomepageSchema, shopCreateSchema } from '@/lib/validation/admin';
+import { serviceFormSchema, shopHomepageSchema, shopCreateSchema, businessHoursSchema } from '@/lib/validation/admin';
 import { planFormSchema } from '@/lib/validation/platform';
 
 describe('isoDateSchema', () => {
@@ -171,5 +171,75 @@ describe('shopCreateSchema 予約語 slug', () => {
     expect(shopCreateSchema.safeParse({ name: 'X', slug: 'admin' }).success).toBe(false);
     expect(shopCreateSchema.safeParse({ name: 'X', slug: 'book' }).success).toBe(false);
     expect(shopCreateSchema.safeParse({ name: 'X', slug: 'my-salon' }).success).toBe(true);
+  });
+});
+
+/**
+ * 営業時間の入力検証。
+ * 店主はITに不慣れな前提なので、「保存はできたのに結果が違う」壊れ方を作らないこと、
+ * かつエラー文で**どの曜日の何が問題か**が分かることを保証する。
+ */
+describe('validation: 営業時間', () => {
+  const ok = (rows: unknown[]) => businessHoursSchema.safeParse({ rows });
+
+  it('通常の1日1行は受理', () => {
+    expect(ok([{ dayOfWeek: 1, openMinute: 600, closeMinute: 1140 }]).success).toBe(true);
+  });
+
+  it('昼休みの分割営業（重ならない2行）は受理', () => {
+    expect(ok([
+      { dayOfWeek: 1, openMinute: 600, closeMinute: 780 },
+      { dayOfWeek: 1, openMinute: 900, closeMinute: 1140 },
+    ]).success).toBe(true);
+  });
+
+  it('連続営業（13:00終了→13:00開始）は重なりではないので受理', () => {
+    expect(ok([
+      { dayOfWeek: 1, openMinute: 600, closeMinute: 780 },
+      { dayOfWeek: 1, openMinute: 780, closeMinute: 1140 },
+    ]).success).toBe(true);
+  });
+
+  it('同じ曜日の完全に同じ行は拒否し、曜日と時刻をエラーに含める', () => {
+    const r = ok([
+      { dayOfWeek: 1, openMinute: 600, closeMinute: 1140 },
+      { dayOfWeek: 1, openMinute: 600, closeMinute: 1140 },
+    ]);
+    expect(r.success).toBe(false);
+    const msg = r.success ? '' : r.error.issues.map((i) => i.message).join(' / ');
+    expect(msg).toContain('月曜');
+    expect(msg).toContain('重なっています');
+    expect(msg).toContain('10:00');
+  });
+
+  it('部分的に重なる行も拒否', () => {
+    const r = ok([
+      { dayOfWeek: 3, openMinute: 600, closeMinute: 900 },
+      { dayOfWeek: 3, openMinute: 840, closeMinute: 1140 },
+    ]);
+    expect(r.success).toBe(false);
+    const msg = r.success ? '' : r.error.issues.map((i) => i.message).join(' / ');
+    expect(msg).toContain('水曜');
+  });
+
+  it('別の曜日どうしは重ならない（誤検知しない）', () => {
+    expect(ok([
+      { dayOfWeek: 1, openMinute: 600, closeMinute: 1140 },
+      { dayOfWeek: 2, openMinute: 600, closeMinute: 1140 },
+    ]).success).toBe(true);
+  });
+
+  it('終了 <= 開始 は拒否（黙って定休になるのを防ぐ）', () => {
+    const inverted = ok([{ dayOfWeek: 5, openMinute: 1140, closeMinute: 600 }]);
+    expect(inverted.success).toBe(false);
+    const msg = inverted.success ? '' : inverted.error.issues.map((i) => i.message).join(' / ');
+    expect(msg).toContain('金曜');
+    expect(msg).toContain('終了時刻は開始時刻より後');
+
+    expect(ok([{ dayOfWeek: 5, openMinute: 600, closeMinute: 600 }]).success).toBe(false);
+  });
+
+  it('空（全曜日定休）は受理する', () => {
+    expect(ok([]).success).toBe(true);
   });
 });

@@ -72,8 +72,24 @@ export function resolveOpenIntervalsForDate(params: ResolveOpenIntervalsParams):
     return { dayStatus: 'REGULAR_CLOSED', openIntervals: [] };
   }
 
+  // 重なる区間は連結して1つにする（多層防御）。
+  // 入力時に validation/admin.ts で重なりを弾いているが、ここでも潰しておく理由:
+  // 検証を入れる前に保存された行、API直叩き、将来の別経路からの投入があっても、
+  // computeAvailability は区間ごとに独立して候補時刻を生成するため、区間が重なると
+  // **顧客の予約画面に同じ時刻が複数回並ぶ**。表示の壊れ方が分かりにくいので入口だけに頼らない。
+  // 隣接（13:00終了→13:00開始）も1区間に連結する。空き枠の生成結果は変わらない。
+  const merged: Array<{ openMinute: number; closeMinute: number }> = [];
+  for (const r of rows) {
+    const last = merged[merged.length - 1];
+    if (last && r.openMinute <= last.closeMinute) {
+      last.closeMinute = Math.max(last.closeMinute, r.closeMinute);
+    } else {
+      merged.push({ openMinute: r.openMinute, closeMinute: r.closeMinute });
+    }
+  }
+
   return {
     dayStatus: 'OPEN',
-    openIntervals: rows.map((r) => toInterval(r.openMinute, r.closeMinute)),
+    openIntervals: merged.map((r) => toInterval(r.openMinute, r.closeMinute)),
   };
 }

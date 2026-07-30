@@ -104,3 +104,91 @@ describe('business-hours: 祝日 / 臨時休業 / 特別営業', () => {
     expect(r.openIntervals[0]!.start.toISOString()).toBe('2026-06-21T01:00:00.000Z'); // 10:00 JST
   });
 });
+
+/**
+ * 同じ曜日に複数行を置けるのは昼休みなどの分割営業のため（意図した機能）。
+ * ただし**重なった区間**をそのまま返すと、computeAvailability が区間ごとに独立して
+ * 候補時刻を生成するため、顧客の予約画面に同じ時刻が複数回並ぶ。
+ * 入力時の検証（validation/admin.ts）に加えて、ここでも連結して潰す（多層防御）。
+ */
+describe('business-hours: 重なる区間の連結', () => {
+  const at = (iso: string) => new Date(iso).toISOString();
+
+  it('完全に同じ区間が2行 → 1区間に連結', () => {
+    const r = resolveOpenIntervalsForDate({
+      date: MON,
+      timeZone: TZ,
+      businessHours: [
+        { dayOfWeek: 1, openMinute: 600, closeMinute: 1140 },
+        { dayOfWeek: 1, openMinute: 600, closeMinute: 1140 },
+      ],
+      specialDay: null,
+      isNationalHoliday: false,
+      closeOnNationalHolidays: false,
+    });
+    expect(r.dayStatus).toBe('OPEN');
+    expect(r.openIntervals).toHaveLength(1);
+  });
+
+  it('部分的に重なる2行 → 外側を包む1区間に連結', () => {
+    const r = resolveOpenIntervalsForDate({
+      date: MON,
+      timeZone: TZ,
+      businessHours: [
+        { dayOfWeek: 1, openMinute: 600, closeMinute: 900 }, // 10-15
+        { dayOfWeek: 1, openMinute: 840, closeMinute: 1140 }, // 14-19（14-15が重複）
+      ],
+      specialDay: null,
+      isNationalHoliday: false,
+      closeOnNationalHolidays: false,
+    });
+    expect(r.openIntervals).toHaveLength(1);
+    expect(at(r.openIntervals[0]!.start.toISOString())).toBe('2026-06-15T01:00:00.000Z'); // 10:00 JST
+    expect(at(r.openIntervals[0]!.end.toISOString())).toBe('2026-06-15T10:00:00.000Z'); // 19:00 JST
+  });
+
+  it('隣接（13:00終了→13:00開始）も1区間に連結', () => {
+    const r = resolveOpenIntervalsForDate({
+      date: MON,
+      timeZone: TZ,
+      businessHours: [
+        { dayOfWeek: 1, openMinute: 600, closeMinute: 780 }, // 10-13
+        { dayOfWeek: 1, openMinute: 780, closeMinute: 1140 }, // 13-19
+      ],
+      specialDay: null,
+      isNationalHoliday: false,
+      closeOnNationalHolidays: false,
+    });
+    expect(r.openIntervals).toHaveLength(1);
+  });
+
+  it('離れた2行（昼休み）は2区間のまま維持される', () => {
+    const r = resolveOpenIntervalsForDate({
+      date: MON,
+      timeZone: TZ,
+      businessHours: [
+        { dayOfWeek: 1, openMinute: 600, closeMinute: 780 }, // 10-13
+        { dayOfWeek: 1, openMinute: 900, closeMinute: 1140 }, // 15-19
+      ],
+      specialDay: null,
+      isNationalHoliday: false,
+      closeOnNationalHolidays: false,
+    });
+    expect(r.openIntervals).toHaveLength(2);
+  });
+
+  it('順序が逆に保存されていても正しく連結する', () => {
+    const r = resolveOpenIntervalsForDate({
+      date: MON,
+      timeZone: TZ,
+      businessHours: [
+        { dayOfWeek: 1, openMinute: 840, closeMinute: 1140 },
+        { dayOfWeek: 1, openMinute: 600, closeMinute: 900 },
+      ],
+      specialDay: null,
+      isNationalHoliday: false,
+      closeOnNationalHolidays: false,
+    });
+    expect(r.openIntervals).toHaveLength(1);
+  });
+});
