@@ -67,6 +67,47 @@ export const serviceFormSchema = z
   .refine((v) => v.salePriceJpy == null || v.salePriceJpy < v.priceJpy, {
     message: 'セール価格は通常料金より安く設定してください。',
     path: ['salePriceJpy'],
+  })
+  /**
+   * 時間帯分割（segments）の整合。指定すると **durationMin より segments が優先される**ため、
+   * ここが緩いと店主の自覚なく所要時間が別物になる:
+   *  - ［区間を追加］を1回押すと既定値（+0分/30分）が入り、90分メニューが実質30分になる。
+   *    その結果、同じスタッフに30分間隔で予約が入り**二重予約が成立してしまう**。
+   *  - 同じ既定値のまま2回押すと区間が重なり、その menu は全時間帯で予約不能になる
+   *    （画面上は○のまま「満席です」と出る）。
+   * どちらも症状から原因に辿り着けないため、入力時に弾く。
+   */
+  .superRefine((v, ctx) => {
+    const segs = v.segments;
+    if (!segs || segs.length === 0) return;
+
+    const sorted = [...segs].sort((a, b) => a.offsetMin - b.offsetMin);
+    for (let i = 1; i < sorted.length; i++) {
+      const prev = sorted[i - 1]!;
+      const cur = sorted[i]!;
+      if (cur.offsetMin < prev.offsetMin + prev.durationMin) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['segments'],
+          message:
+            `時間帯分割が重なっています（開始+${prev.offsetMin}分から${prev.durationMin}分 と ` +
+            `開始+${cur.offsetMin}分から${cur.durationMin}分）。重ならないように設定してください。`,
+        });
+        return;
+      }
+    }
+    // 分割の全長が所要時間と食い違うと、実際の占有が所要時間と別物になる
+    const last = sorted[sorted.length - 1]!;
+    const span = last.offsetMin + last.durationMin;
+    if (span !== v.durationMin) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['segments'],
+        message:
+          `時間帯分割の合計（開始から${span}分）が所要時間（${v.durationMin}分）と一致しません。` +
+          `分割を使う場合は、最後の区間の終わりが所要時間と同じになるように設定してください。`,
+      });
+    }
   });
 export type ServiceFormInput = z.infer<typeof serviceFormSchema>;
 

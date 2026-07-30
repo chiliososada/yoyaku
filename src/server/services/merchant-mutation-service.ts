@@ -227,7 +227,9 @@ export async function createService(tenantId: string, shopId: string, input: Ser
         category: input.category || null,
         description: input.description || null,
         durationMin: input.durationMin,
-        segments: input.segments && input.segments.length > 0 ? input.segments : undefined,
+        // 空配列は「分割をやめる」という明示的な操作。undefined にすると Prisma が
+        // 「変更なし」と解釈して**旧設定が残り続ける**（店主は消したつもりでいる）。
+        segments: input.segments && input.segments.length > 0 ? input.segments : Prisma.DbNull,
         bufferAfterMin: input.bufferAfterMin,
         priceJpy: input.priceJpy,
         salePriceJpy: input.salePriceJpy ?? null,
@@ -318,7 +320,9 @@ export async function updateService(tenantId: string, shopId: string, serviceId:
         category: input.category || null,
         description: input.description || null,
         durationMin: input.durationMin,
-        segments: input.segments && input.segments.length > 0 ? input.segments : undefined,
+        // 空配列は「分割をやめる」という明示的な操作。undefined にすると Prisma が
+        // 「変更なし」と解釈して**旧設定が残り続ける**（店主は消したつもりでいる）。
+        segments: input.segments && input.segments.length > 0 ? input.segments : Prisma.DbNull,
         bufferAfterMin: input.bufferAfterMin,
         priceJpy: input.priceJpy,
         salePriceJpy: input.salePriceJpy ?? null,

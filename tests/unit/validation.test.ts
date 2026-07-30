@@ -243,3 +243,61 @@ describe('validation: 営業時間', () => {
     expect(ok([]).success).toBe(true);
   });
 });
+
+/**
+ * メニューの「時間帯分割」。指定すると所要時間より優先されるため、
+ * 緩いと店主の自覚なく所要時間が別物になり、二重予約や全枠予約不可を招く。
+ */
+describe('validation: メニューの時間帯分割', () => {
+  const base = {
+    name: 'カット', durationMin: 90, priceJpy: 5000, salePriceJpy: null,
+    capacity: 1, requiresStaff: true, slotIntervalMin: 15, isActive: true,
+    sortOrder: 0, staffIds: ['s1'], options: [],
+  };
+  const parse = (segments?: unknown[]) => serviceFormSchema.safeParse({ ...base, segments });
+
+  it('分割なしは受理（既定の使い方）', () => {
+    expect(parse(undefined).success).toBe(true);
+    expect(parse([]).success).toBe(true);
+  });
+
+  it('合計が所要時間と一致する分割は受理（例: 施術→放置→仕上げ）', () => {
+    expect(parse([
+      { offsetMin: 0, durationMin: 30 },
+      { offsetMin: 60, durationMin: 30 },
+    ]).success).toBe(true); // 60+30 = 90
+  });
+
+  it('区間を1つ足しただけ（既定+0分/30分）は所要時間90分と食い違うので拒否', () => {
+    const r = parse([{ offsetMin: 0, durationMin: 30 }]);
+    expect(r.success).toBe(false);
+    const msg = r.success ? '' : r.error.issues.map((i) => i.message).join(' / ');
+    expect(msg).toContain('一致しません');
+    expect(msg).toContain('90分');
+  });
+
+  it('同じ既定値を2つ足すと重なるので拒否', () => {
+    const r = parse([
+      { offsetMin: 0, durationMin: 30 },
+      { offsetMin: 0, durationMin: 30 },
+    ]);
+    expect(r.success).toBe(false);
+    const msg = r.success ? '' : r.error.issues.map((i) => i.message).join(' / ');
+    expect(msg).toContain('重なっています');
+  });
+
+  it('部分的に重なる分割も拒否', () => {
+    const r = parse([
+      { offsetMin: 0, durationMin: 40 },
+      { offsetMin: 30, durationMin: 60 },
+    ]);
+    expect(r.success).toBe(false);
+  });
+
+  it('隙間があっても合計が合っていれば受理（放置時間の表現）', () => {
+    expect(parse([
+      { offsetMin: 0, durationMin: 20 },
+      { offsetMin: 70, durationMin: 20 },
+    ]).success).toBe(true); // 70+20 = 90
+  });
+});

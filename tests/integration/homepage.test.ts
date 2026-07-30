@@ -116,6 +116,31 @@ describe('shop homepage service', () => {
     expect(hp2!.address).toBe('1-2-3');
   });
 
+  /**
+   * 「住所を表示する」OFF はホームページだけでなく**予約ページ・公開API**にも効く必要がある。
+   * ここが漏れていると、自宅サロンの店主が住所を隠したつもりでも /book/{slug} から
+   * 番地まで見え続け、本人はそれに気づけない。
+   */
+  it('hides the address on the booking page and public API too, not just the homepage', async () => {
+    const { getPublicShop } = await import('@/server/services/public-shop-service');
+    await prisma.shop.update({
+      where: { id: shopId },
+      data: { prefecture: '東京都', city: '渋谷区', address: '1-2-3' },
+    });
+
+    await saveHomepage(tenantId, shopId, input({ showAddress: false }));
+    const hidden = await getPublicShop(slug);
+    expect(hidden.address).toBeNull();
+    expect(hidden.city).toBeNull();
+    // 都道府県は検索性のため残す（ホームページ側と方針を揃える）
+    expect(hidden.prefecture).toBe('東京都');
+
+    await saveHomepage(tenantId, shopId, input({ showAddress: true }));
+    const shown = await getPublicShop(slug);
+    expect(shown.address).toBe('1-2-3');
+    expect(shown.city).toBe('渋谷区');
+  });
+
   it('is gated off when the shop is not PUBLISHED even if enabled', async () => {
     await saveHomepage(tenantId, shopId, input({ homepageEnabled: true }));
     await prisma.shop.update({ where: { id: shopId }, data: { status: 'DRAFT' } });

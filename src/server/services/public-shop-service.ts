@@ -69,9 +69,16 @@ export async function getPublicShop(slug: string): Promise<PublicShop> {
       address: true,
       phone: true,
       timezone: true,
+      // ホームページの「住所を表示する」設定は予約ページ・公開APIにも効かせる。
+      // ここを見ないと、自宅サロンの店主が住所を隠したつもりでも
+      // /book/{slug} と公開APIから番地まで見え続ける（本人は気づけない）。
+      profile: { select: { showAddress: true } },
     },
   });
   if (!shop) throw Errors.notFound('店舗が見つかりませんでした。');
+
+  // プロフィール未作成時は既定で表示（従来挙動）。明示的に false のときだけ伏せる。
+  const hideAddress = shop.profile?.showAddress === false;
 
   const [services, staff] = await Promise.all([
     prisma.service.findMany({
@@ -106,8 +113,13 @@ export async function getPublicShop(slug: string): Promise<PublicShop> {
     }),
   ]);
 
+  const { profile: _profile, ...shopFields } = shop;
   return {
-    ...shop,
+    ...shopFields,
+    // 住所を伏せる設定なら、市区町村より細かい情報を公開面から落とす
+    // （都道府県までは検索性のため残す。ホームページ側の表示方針と揃える）
+    city: hideAddress ? null : shopFields.city,
+    address: hideAddress ? null : shopFields.address,
     services: services.map((s) => ({
       id: s.id,
       name: s.name,
