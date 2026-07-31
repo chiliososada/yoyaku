@@ -198,14 +198,24 @@ export async function listFailedNotifications(
   tenantId: string,
   opts?: { shopId?: string; limit?: number },
 ): Promise<FailedNotification[]> {
+  /**
+   * shopId で絞るときも、予約に紐づかない通知（課金の督促・トライアル終了・解約確認）は必ず含める。
+   * `booking: { shopId }` だけで絞ると bookingId が null の課金通知が全て落ち、
+   * 「督促メールが届いていない」という一番気づかなければならない失敗が
+   * どの画面にも出ない状態になっていた。
+   */
+  const where = {
+    tenantId,
+    status: 'FAILED' as const,
+    ...(opts?.shopId
+      ? { OR: [{ booking: { shopId: opts.shopId } }, { bookingId: null }] }
+      : {}),
+  };
+  const limit = opts?.limit ?? 50;
   const rows = await prisma.notificationJob.findMany({
-    where: {
-      tenantId,
-      status: 'FAILED',
-      ...(opts?.shopId ? { booking: { shopId: opts.shopId } } : {}),
-    },
+    where,
     orderBy: { createdAt: 'desc' },
-    take: opts?.limit ?? 50,
+    take: limit,
     select: {
       id: true,
       channel: true,
@@ -244,10 +254,15 @@ export async function listFailedNotifications(
   }));
 }
 
-/** FAILED 件数（バッジ表示用）。 */
+/** FAILED 件数（バッジ表示用）。listFailedNotifications と同じ範囲で数える。 */
 export async function countFailedNotifications(tenantId: string, shopId?: string): Promise<number> {
   return prisma.notificationJob.count({
-    where: { tenantId, status: 'FAILED', ...(shopId ? { booking: { shopId } } : {}) },
+    where: {
+      tenantId,
+      status: 'FAILED',
+      // 予約に紐づかない課金通知も対象（一覧側と条件を揃えないとバッジと中身がずれる）
+      ...(shopId ? { OR: [{ booking: { shopId } }, { bookingId: null }] } : {}),
+    },
   });
 }
 

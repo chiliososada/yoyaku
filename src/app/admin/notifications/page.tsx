@@ -1,7 +1,7 @@
 import { requireTenantUser } from '@/server/auth/authorize';
 import { getPrimaryShop } from '@/server/services/merchant-service';
 import { listRecipients } from '@/server/services/notification-recipient-service';
-import { listFailedNotifications } from '@/server/services/notification-service';
+import { listFailedNotifications, countFailedNotifications } from '@/server/services/notification-service';
 import { isLineConfigured, lineAddFriendUrl } from '@/server/notifications/line';
 import { isEmailConfigured } from '@/server/notifications/email';
 import { formatBookingDateTime } from '@/lib/time';
@@ -15,9 +15,11 @@ export const dynamic = 'force-dynamic';
 export default async function NotificationsPage() {
   const user = await requireTenantUser();
   const shop = await getPrimaryShop(user.tenantId);
-  const [recipients, failed] = await Promise.all([
+  const [recipients, failed, failedTotal] = await Promise.all([
     listRecipients(user.tenantId, shop.id),
     listFailedNotifications(user.tenantId, { shopId: shop.id }),
+    // 一覧は直近50件で頭打ちになる。件数は必ず実数を出す（少なく見せない）。
+    countFailedNotifications(user.tenantId, shop.id),
   ]);
 
   const addFriendUrl = lineAddFriendUrl();
@@ -49,6 +51,7 @@ export default async function NotificationsPage() {
       <Panel title="配信できなかった通知" className="mt-6">
         <FailedNotifications
           shopId={shop.id}
+          total={failedTotal}
           items={failed.map((f) => ({
             id: f.id,
             channel: f.channel,

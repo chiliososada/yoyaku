@@ -32,7 +32,16 @@ function maskRecipient(channel: string, recipient: string): string {
   return recipient;
 }
 
-export function FailedNotifications({ shopId, items }: { shopId: string; items: FailedNotificationView[] }) {
+export function FailedNotifications({
+  shopId,
+  items,
+  total,
+}: {
+  shopId: string;
+  items: FailedNotificationView[];
+  /** FAILED の実件数。一覧は直近50件で頭打ちになるため、件数は必ずこちらを使う。 */
+  total: number;
+}) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -54,7 +63,7 @@ export function FailedNotifications({ shopId, items }: { shopId: string; items: 
     });
   };
 
-  if (items.length === 0) {
+  if (total === 0 && items.length === 0) {
     return (
       <div className="flex items-center gap-2.5 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
         <CheckCircle2 className="size-4 shrink-0" />
@@ -68,10 +77,16 @@ export function FailedNotifications({ shopId, items }: { shopId: string; items: 
       <div className="flex items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
         <AlertTriangle className="mt-0.5 size-4 shrink-0" />
         <div>
-          <p className="font-medium">{items.length} 件の通知がお客様・スタッフに届いていません。</p>
+          <p className="font-medium">{total} 件の通知がお客様・スタッフに届いていません。</p>
           <p className="mt-0.5 text-xs text-amber-800/80">
             メールアドレスの誤りや、LINE のブロック・一時的な障害が原因です。宛先をご確認のうえ「再送する」をお試しください。
           </p>
+          {/* 一覧を切り詰めていることを黙っていると、実際より少ないと誤解される */}
+          {total > items.length && (
+            <p className="mt-0.5 text-xs text-amber-800/80">
+              下には直近 {items.length} 件のみ表示しています。
+            </p>
+          )}
         </div>
       </div>
 

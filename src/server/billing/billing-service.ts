@@ -19,6 +19,7 @@ import {
   createStripeCustomer,
   isStripeConfigured,
   StripeApiError,
+  listLiveSubscriptions,
 } from './stripe';
 
 /** 新規テナントに付与するローカル無料トライアル日数。 */
@@ -175,6 +176,27 @@ export async function startCheckout(tenantId: string, planId: string, email?: st
     });
 
   const customerId = await ensureStripeCustomer(tenantId, email);
+
+  /**
+   * 申込直前に Stripe 側の実態を確認する。
+   *
+   * 上のガードはテナント行のミラー列を見ているが、この列を書くのは Webhook だけ。
+   * 解約→再契約のケースでは行に残っているのが「解約済みの旧ID」なので、
+   * 新しい Checkout の完了イベントを取りこぼすと、店主には何も変化が見えず
+   * もう一度「申し込む」を押す → 2本目の契約が成立して毎月二重に課金される
+   * （テナント行は最後の1本しか持たないので、1本目は誰にも気づかれない）。
+   * 二重課金は取り返しがつかないため、真実の情報源に聞いてから発行する。
+   */
+  const live = await listLiveSubscriptions(customerId);
+  if (live.length > 0) {
+    logger.warn({ tenantId, customerId, live }, '[billing] checkout blocked: live subscription exists on stripe');
+    throw Errors.conflict(
+      'CONFLICT',
+      'すでにお申し込み済みのご契約が確認できました。二重のご請求を防ぐため、こちらからの新規お申し込みは停止しています。' +
+        '「お支払い方法・解約の管理」からご確認いただくか、表示が更新されない場合はサポートへご連絡ください。',
+    );
+  }
+
   try {
     return (await open(customerId)).url;
   } catch (e) {

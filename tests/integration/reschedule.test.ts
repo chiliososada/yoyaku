@@ -5,6 +5,17 @@ import { describe, it, expect, afterAll } from 'vitest';
 import { prisma } from '@/lib/db';
 import { createBooking, rescheduleBooking } from '@/server/services/booking-service';
 import { seedScenario, cleanupTenant } from '../helpers/seed';
+import { isAppError } from '@/lib/errors';
+
+/** AppError の message はコード。画面に出るのは userMessage なのでそちらを見る。 */
+async function userMessageOf(fn: () => Promise<unknown>): Promise<string> {
+  try {
+    await fn();
+  } catch (e) {
+    return isAppError(e) ? e.userMessage : String((e as Error).message);
+  }
+  throw new Error('expected to throw');
+}
 
 const NOW = new Date('2026-07-05T00:00:00Z');
 const created: string[] = [];
@@ -122,5 +133,49 @@ describe('rescheduleBooking', () => {
       where: { bookingId: b.id, active: true }, _sum: { priceJpy: true },
     });
     expect((itemSum._sum.priceJpy ?? 0) + booking!.nominationFeeJpy).toBe(booking!.totalPriceJpy);
+  });
+
+  it('担当が退職していたら、原因と次の一手が分かるメッセージで断る', async () => {
+    const sc = await seedScenario({ staffCount: 2 });
+    created.push(sc.tenantId);
+    const s0 = sc.staffIds[0]!;
+    const b = await createBooking({
+      tenantId: sc.tenantId, shopId: sc.shopId, serviceId: sc.serviceId, staffId: s0,
+      startAt: new Date('2026-07-06T01:00:00Z'), customer: { name: 'S', email: 's@x.com' }, now: NOW,
+    });
+    await prisma.staff.update({
+      where: { id: s0 },
+      data: { status: 'INACTIVE', isBookable: false, deletedAt: new Date() },
+    });
+
+    const msg = await userMessageOf(() =>
+      rescheduleBooking({
+        bookingId: b.id, newStartAt: new Date('2026-07-06T02:00:00Z'), actorType: 'CUSTOMER', now: NOW,
+      }),
+    );
+    expect(msg).toContain('担当者');
+    expect(msg).toContain('店舗へ直接'); // 次の一手を必ず示す
+    // 勝手に別の担当へ振り替えない（指名した人と違う人が出てくるのを防ぐ）
+    const still = await prisma.booking.findUnique({ where: { id: b.id }, select: { staffId: true, startAt: true } });
+    expect(still!.staffId).toBe(s0);
+    expect(still!.startAt.toISOString()).toBe('2026-07-06T01:00:00.000Z');
+  });
+
+  it('メニューが廃止されていたら、不具合ではなく状況として説明する', async () => {
+    const sc = await seedScenario({ staffCount: 1 });
+    created.push(sc.tenantId);
+    const b = await createBooking({
+      tenantId: sc.tenantId, shopId: sc.shopId, serviceId: sc.serviceId, staffId: sc.staffIds[0]!,
+      startAt: new Date('2026-07-06T01:00:00Z'), customer: { name: 'M', email: 'm@x.com' }, now: NOW,
+    });
+    await prisma.service.update({ where: { id: sc.serviceId }, data: { deletedAt: new Date(), isActive: false } });
+
+    const msg = await userMessageOf(() =>
+      rescheduleBooking({
+        bookingId: b.id, newStartAt: new Date('2026-07-06T02:00:00Z'), actorType: 'CUSTOMER', now: NOW,
+      }),
+    );
+    expect(msg).toContain('メニュー内容');
+    expect(msg).toContain('店舗へ直接');
   });
 });

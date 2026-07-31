@@ -1224,7 +1224,22 @@ export async function rescheduleBooking(input: RescheduleBookingInput): Promise<
         const localDate = zonedDateString(input.newStartAt, tz);
         const staffIdReq = input.newStaffId === undefined ? b.staffId : input.newStaffId;
 
-        const combo = await loadComboContext(tx, b.tenantId, b.shopId, serviceItems, staffIdReq);
+        /**
+         * 予約後に店側がメニューやオプションを廃止していると、ここで
+         * 「店舗またはサービスが見つかりません。」という不具合にしか見えない 404 が出ていた。
+         * 客は自分の予約リンクを開いただけなので、原因も次の一手も分からない。
+         * 状況を説明し、店舗へ連絡する導線を示す（勝手に別メニューへ置き換えたりはしない）。
+         */
+        let combo;
+        try {
+          combo = await loadComboContext(tx, b.tenantId, b.shopId, serviceItems, staffIdReq);
+        } catch {
+          throw Errors.conflict(
+            'SLOT_UNAVAILABLE',
+            'ご予約のメニュー内容が現在お取り扱いできないため、この画面から日時を変更できません。' +
+              'お手数ですが店舗へ直接ご連絡ください（ご予約自体は有効です）。',
+          );
+        }
         if (staffIdReq) {
           // createBooking と同じく、指名スタッフが当該店舗の実在・有効・予約可能な
           // スタッフであることを検証する。requiresStaff=false のサービスでも、外部/他店舗/
@@ -1240,7 +1255,15 @@ export async function rescheduleBooking(input: RescheduleBookingInput): Promise<
             },
             select: { id: true },
           });
-          if (!staffRow) throw Errors.notFound('指名されたスタッフが見つかりません。');
+          if (!staffRow) {
+            // 予約後に担当が退職・停止したケース。客は日時を変えたいだけなのに 404 が出ていた。
+            // 勝手に別の担当へ振り替えると「指名した人と違う人が出てくる」ので、それはしない。
+            throw Errors.conflict(
+              'STAFF_UNAVAILABLE',
+              'ご指名の担当者が現在ご予約をお受けできないため、この画面から日時を変更できません。' +
+                'お手数ですが店舗へ直接ご連絡ください（ご予約自体は有効です）。',
+            );
+          }
           if (combo.requiresStaff && !combo.candidateStaffIds.includes(staffIdReq)) {
             throw reasonError('STAFF_UNAVAILABLE');
           }

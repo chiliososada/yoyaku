@@ -87,6 +87,43 @@ async function stripePost<T>(
   return data;
 }
 
+async function stripeGet<T>(path: string): Promise<T> {
+  if (!isStripeConfigured()) throw Errors.conflict('STRIPE_NOT_CONFIGURED', '決済機能は準備中です。');
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${env.STRIPE_SECRET_KEY}` },
+  });
+  const data = (await res.json()) as T & {
+    error?: { message?: string; type?: string; code?: string; param?: string };
+  };
+  if (!res.ok) {
+    const msg = data.error?.message ?? `Stripe API error (${res.status})`;
+    throw new StripeApiError(
+      `[stripe] ${path}: ${msg}`,
+      data.error?.code ?? null,
+      data.error?.type ?? null,
+      data.error?.param ?? null,
+      res.status,
+    );
+  }
+  return data;
+}
+
+/**
+ * 顧客の「まだ生きている」サブスクリプション一覧。
+ *
+ * 二重申込の判定を自前のミラー列だけに頼ると、Webhook が落ちた分だけ穴になる
+ * （解約→再契約の場合、テナント行には解約済みの旧IDが残るので既存ガードが素通りする）。
+ * 二重課金は取り返しがつかないので、申込直前に Stripe を真実の情報源として確認する。
+ */
+export async function listLiveSubscriptions(customerId: string): Promise<{ id: string; status: string }[]> {
+  const data = await stripeGet<{ data?: { id: string; status: string }[] }>(
+    `/subscriptions?customer=${encodeURIComponent(customerId)}&status=all&limit=100`,
+  );
+  const DEAD = new Set(['canceled', 'incomplete_expired']);
+  return (data.data ?? []).filter((s) => !DEAD.has(s.status)).map((s) => ({ id: s.id, status: s.status }));
+}
+
 /** Stripe 顧客を作成（テナント単位・metadata に tenantId を刻む）。 */
 export async function createStripeCustomer(input: {
   tenantId: string;
