@@ -11,6 +11,7 @@
 import { randomInt } from 'node:crypto';
 import { prisma, Prisma, type DbClient } from '@/lib/db';
 import { Errors, type AppErrorCode } from '@/lib/errors';
+import { normalizeEmailKey, normalizePhoneKey } from '@/lib/customer-key';
 import { nowUtc, zonedDateString, zonedDateMinutesToUtc, isoDateAddDays } from '@/lib/time';
 import {
   computeAvailability,
@@ -721,14 +722,46 @@ export async function createBooking(input: CreateBookingInput): Promise<CreateBo
           staffId: assignedStaffId,
         });
 
-        // 顧客（既存 email があれば再利用、なければ作成）
+        /**
+         * 顧客カルテの同定。LINE → メール → 電話 の順で既存を探し、無ければ作成する。
+         *
+         * 以前は email だけで探していたため、**メールを持たない予約が毎回新規カルテを作っていた**:
+         *  - LIFF(LINE) 予約はメール欄自体を出さない
+         *  - 後台の代理登録（電話・飛び込み）は氏名だけで成立する
+         * その結果、常連でも「来店回数 1 回 / 累計利用額 = 1回分」のままで、顧客一覧は同名だらけ、
+         * 休眠顧客リストには同じ人が来店回数だけ並ぶ。数字が全て狂う。
+         *
+         * 突き合わせキーは保存値と必ず一致させる（メールは小文字化、電話は数字のみ）。
+         * 表記ゆれで別人になるのを防ぐため、保存も正規化した値で行う。
+         */
+        const emailKey = normalizeEmailKey(input.customer.email);
+        const phoneKey = normalizePhoneKey(input.customer.phone);
+        const lineKey = input.lineUserId ?? null;
+
+        const or: Prisma.CustomerWhereInput[] = [];
+        if (lineKey) or.push({ lineUserId: lineKey });
+        if (emailKey) or.push({ email: emailKey });
+        if (phoneKey) or.push({ phone: phoneKey });
+
         let customerId: string | null = null;
-        if (input.customer.email) {
+        if (or.length > 0) {
           const existing = await tx.customer.findFirst({
-            where: { tenantId: input.tenantId, email: input.customer.email, deletedAt: null },
-            select: { id: true },
+            where: { tenantId: input.tenantId, deletedAt: null, OR: or },
+            // 同定の強い順（LINE > メール > 電話）に一致した1件を使う
+            orderBy: { createdAt: 'asc' },
+            select: { id: true, lineUserId: true, email: true, phone: true },
           });
-          customerId = existing?.id ?? null;
+          if (existing) {
+            customerId = existing.id;
+            // 別チャネルで初めて分かった連絡先を書き戻す（次回の同定精度が上がる）
+            const backfill: Prisma.CustomerUpdateInput = {};
+            if (lineKey && !existing.lineUserId) backfill.lineUserId = lineKey;
+            if (emailKey && !existing.email) backfill.email = emailKey;
+            if (phoneKey && !existing.phone) backfill.phone = phoneKey;
+            if (Object.keys(backfill).length > 0) {
+              await tx.customer.update({ where: { id: existing.id }, data: backfill });
+            }
+          }
         }
         if (!customerId) {
           const created = await tx.customer.create({
@@ -737,8 +770,9 @@ export async function createBooking(input: CreateBookingInput): Promise<CreateBo
               shopId: input.shopId,
               name: input.customer.name,
               nameKana: input.customer.nameKana ?? null,
-              email: input.customer.email ?? null,
-              phone: input.customer.phone ?? null,
+              email: emailKey,
+              phone: phoneKey,
+              lineUserId: lineKey,
             },
             select: { id: true },
           });

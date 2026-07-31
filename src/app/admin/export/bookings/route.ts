@@ -20,6 +20,18 @@ function cell(v: string | number | null | undefined): string {
   return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
+/**
+ * Excel/Sheets が数値と解釈して先頭ゼロを落とす列（電話番号・予約番号）用。
+ * 09012345678 が 9012345678 になると、対帳のために出した CSV から
+ * 客に電話をかけられない（しかも一見それらしい数字なので気づきにくい）。
+ * 先頭に ' を付けるとテキストとして固定される（cell と同じ方式）。
+ */
+function textCell(v: string | number | null | undefined): string {
+  const s = v == null ? '' : String(v);
+  if (s === '') return '';
+  return cell(`'${s}`.replace(/^''/, "'"));
+}
+
 const HEADERS = [
   '予約番号', '日付', '開始', '終了', '顧客名', 'メール', '電話',
   'メニュー', '担当', '状態', '人数', '料金(円)', '指名料(円)',
@@ -52,7 +64,7 @@ export async function GET(req: NextRequest) {
     const menu = names.length > 0 ? names.join(' + ') : b.service.name;
     lines.push(
       [
-        b.id.slice(-8).toUpperCase(),
+        b.id.slice(-8).toUpperCase(), // 英数字混在だが数字のみになり得るのでテキスト固定（下の map で扱う）
         formatInTz(b.startAt, 'yyyy-MM-dd', tz),
         formatInTz(b.startAt, 'HH:mm', tz),
         formatInTz(b.endAt, 'HH:mm', tz),
@@ -66,7 +78,8 @@ export async function GET(req: NextRequest) {
         b.totalPriceJpy,
         b.nominationFeeJpy,
       ]
-        .map(cell)
+        // 電話(index 6)と予約番号(index 0)はテキスト固定、それ以外は通常のエスケープ
+        .map((v, i) => (i === 0 || i === 6 ? textCell(v) : cell(v)))
         .join(','),
     );
   }

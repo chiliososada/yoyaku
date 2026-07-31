@@ -609,8 +609,29 @@ export async function deleteStaffOverride(tenantId: string, shopId: string, sche
 
 // ---- 顧客カルテ ----
 /** 顧客のメモ（好み・接客メモ等）を更新。 */
-export async function updateCustomerNote(tenantId: string, customerId: string, note: string) {
-  const c = await prisma.customer.findFirst({ where: { id: customerId, tenantId, deletedAt: null }, select: { id: true } });
+export async function updateCustomerNote(
+  tenantId: string,
+  customerId: string,
+  note: string,
+  shopIds: string[] | null = null,
+) {
+  // 参照と同じ範囲でしか書けないようにする（読めない相手のメモを書き換えられては意味が無い）
+  const c = await prisma.customer.findFirst({
+    where: {
+      id: customerId,
+      tenantId,
+      deletedAt: null,
+      ...(shopIds && shopIds.length > 0
+        ? {
+            OR: [
+              { shopId: { in: shopIds } },
+              { bookings: { some: { shopId: { in: shopIds }, deletedAt: null } } },
+            ],
+          }
+        : {}),
+    },
+    select: { id: true },
+  });
   if (!c) throw Errors.notFound('顧客が見つかりません。');
   await prisma.customer.update({ where: { id: customerId }, data: { note: note.trim() || null } });
 }

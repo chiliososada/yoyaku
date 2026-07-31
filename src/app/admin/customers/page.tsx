@@ -10,7 +10,10 @@ export const dynamic = 'force-dynamic';
 
 export default async function CustomersPage() {
   const user = await requireTenantUser();
-  const customers = await listCustomers(user.tenantId);
+  // 店舗スコープの利用者（店員・店長ロールで店舗が限定されている）は自店に関係する顧客だけ。
+  // 全社権限（tenantWide）とプラットフォーム管理者は従来どおり全件。
+  const shopIds = user.isPlatformAdmin || user.tenantWide ? null : user.shopScopes;
+  const { customers, total } = await listCustomers(user.tenantId, { shopIds });
   // 休眠顧客は分析（ANALYTICS_READ）機能。権限が無いスタッフには導線を出さない（クリックしても弾かれるため）。
   const canSeeDormant = hasPermission(user, PERMISSIONS.ANALYTICS_READ);
 
@@ -18,7 +21,11 @@ export default async function CustomersPage() {
     <div>
       <PageHeader
         title="顧客管理"
-        description={`${customers.length} 名の顧客`}
+        description={
+          total > customers.length
+            ? `${total} 名の顧客（新しい ${customers.length} 名を表示）`
+            : `${total} 名の顧客`
+        }
         action={
           canSeeDormant ? (
             <Link

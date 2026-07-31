@@ -11,12 +11,28 @@ import {
   countFailedNotifications,
   listFailedNotifications,
   retryFailedNotification,
+  processNotificationJob,
 } from '@/server/services/notification-service';
 import { seedScenario, cleanupTenant } from '../helpers/seed';
 
 const DATE = '2026-09-08';
 const NOW = new Date('2026-09-03T00:00:00.000Z');
 const createdTenants: string[] = [];
+
+/** 予約を1件作る（モジュール共通ヘルパー）。 */
+async function mkBooking(
+  sc: { tenantId: string; shopId: string; serviceId: string },
+  email: string,
+) {
+  const { slots } = await getDayAvailability({
+    tenantId: sc.tenantId, shopId: sc.shopId, serviceId: sc.serviceId, date: DATE, now: NOW,
+  });
+  return createBooking({
+    tenantId: sc.tenantId, shopId: sc.shopId, serviceId: sc.serviceId, staffId: null,
+    startAt: slots.find((s) => s.available)!.startAt,
+    customer: { name: '失敗', email }, now: NOW,
+  });
+}
 
 beforeAll(async () => {
   await prisma.$queryRaw`SELECT 1`;
@@ -179,5 +195,62 @@ describe('配信できなかった通知の可視化', () => {
 
     // 二重クリックしても二度目は何も起きない
     expect(await retryFailedNotification(a.tenantId, listA[0]!.id)).toBe(false);
+  });
+});
+
+describe('送信直前の鮮度チェック', () => {
+  it('キャンセル済み予約のリマインドは送らず CANCELLED にする', async () => {
+    const sc = await seedScenario({ staffCount: 1 });
+    createdTenants.push(sc.tenantId);
+    const b = await mkBooking(sc, 'stale-cancel@test.com');
+    // 通知ジョブだけ PENDING に戻し、予約はキャンセル状態にする
+    // （障害でジョブが滞留している間にキャンセルされた状況を再現）
+    await prisma.notificationJob.updateMany({
+      where: { bookingId: b.id }, data: { status: 'PENDING' },
+    });
+    await prisma.booking.update({ where: { id: b.id }, data: { status: 'CANCELLED' } });
+
+    const job = await prisma.notificationJob.findFirst({
+      where: { bookingId: b.id, template: 'BOOKING_REMINDER' }, select: { id: true },
+    });
+    const r = await processNotificationJob(job!.id);
+    expect(r).toBe('SKIPPED');
+    const after = await prisma.notificationJob.findUnique({
+      where: { id: job!.id }, select: { status: true, lastError: true },
+    });
+    expect(after!.status).toBe('CANCELLED');
+    expect(after!.lastError).toContain('stale');
+  });
+
+  it('開始時刻を過ぎた予約のリマインドは送らない', async () => {
+    const sc = await seedScenario({ staffCount: 1 });
+    createdTenants.push(sc.tenantId);
+    const b = await mkBooking(sc, 'stale-past@test.com');
+    await prisma.notificationJob.updateMany({ where: { bookingId: b.id }, data: { status: 'PENDING' } });
+    // 予約を過去へ動かす（worker 停止から復帰した状況）
+    await prisma.booking.update({
+      where: { id: b.id },
+      data: { startAt: new Date(Date.now() - 3 * 3600_000), endAt: new Date(Date.now() - 2 * 3600_000) },
+    });
+    const job = await prisma.notificationJob.findFirst({
+      where: { bookingId: b.id, template: 'BOOKING_REMINDER' }, select: { id: true },
+    });
+    expect(await processNotificationJob(job!.id)).toBe('SKIPPED');
+  });
+
+  it('キャンセル通知はキャンセル済みでも送る（巻き添えにしない）', async () => {
+    const sc = await seedScenario({ staffCount: 1 });
+    createdTenants.push(sc.tenantId);
+    const b = await mkBooking(sc, 'cancel-notice@test.com');
+    await prisma.booking.update({ where: { id: b.id }, data: { status: 'CANCELLED' } });
+    const job = await prisma.notificationJob.create({
+      data: {
+        tenantId: sc.tenantId, bookingId: b.id, channel: 'EMAIL',
+        template: 'BOOKING_CANCELLED', recipient: 'cancel-notice@test.com', status: 'PENDING',
+        payload: { bookingId: b.id },
+      },
+      select: { id: true },
+    });
+    expect(await processNotificationJob(job.id)).not.toBe('SKIPPED');
   });
 });

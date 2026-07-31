@@ -264,7 +264,8 @@ export async function updateCustomerNoteAction(customerId: string, note: string)
     const user = await requirePermission(PERMISSIONS.CUSTOMER_WRITE);
     if (!user.tenantId) throw Errors.forbidden('テナント管理者のみ操作できます。');
     const parsed = z.string().max(2000, 'メモは2000文字以内で入力してください。').parse(note);
-    await svc.updateCustomerNote(user.tenantId, customerId, parsed);
+    const shopIds = user.isPlatformAdmin || user.tenantWide ? null : user.shopScopes;
+    await svc.updateCustomerNote(user.tenantId, customerId, parsed, shopIds);
     await audit({ id: user.id, tenantId: user.tenantId }, 'customer.note.update', 'customer', customerId);
     revalidatePath(`/admin/customers/${customerId}`);
   });

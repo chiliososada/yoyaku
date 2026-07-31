@@ -132,6 +132,40 @@ export async function processNotificationJob(jobId: string): Promise<'SENT' | 'F
   if (claimed.count === 0) return 'SKIPPED';
 
   try {
+    /**
+     * 送信直前の鮮度チェック。
+     *
+     * ジョブは作られてから送られるまでに時間が空く（リマインドは前日、障害時は最大150分の再試行、
+     * 失敗ジョブの手動再送はもっと後）。その間に予約がキャンセル/来店済みになっていたり、
+     * 開始時刻を過ぎていたりする。確認せずに送ると、
+     * 「キャンセルしたのに前日リマインドが来た」「終わった予約のリマインドが今頃来た」となり、
+     * 客は予約が生きていると誤解して来店する。
+     * キャンセル系テンプレートは状態が CANCELLED でも送る必要があるので除外しない。
+     */
+    if (job.bookingId && !job.template.includes('CANCEL')) {
+      const b = await prisma.booking.findUnique({
+        where: { id: job.bookingId },
+        select: { status: true, startAt: true, deletedAt: true },
+      });
+      const stale =
+        !b ||
+        b.deletedAt !== null ||
+        b.status === 'CANCELLED' ||
+        b.status === 'NO_SHOW' ||
+        // 開始済みの予約にリマインドを送っても意味が無い（混乱させるだけ）
+        (job.template === 'BOOKING_REMINDER' && b.startAt.getTime() <= nowUtc().getTime());
+      if (stale) {
+        await prisma.notificationJob.update({
+          where: { id: job.id },
+          data: {
+            status: 'CANCELLED',
+            lastError: `stale at dispatch (${b ? `${b.status}` : 'booking gone'})`,
+          },
+        });
+        return 'SKIPPED';
+      }
+    }
+
     // recipient 空（メール未登録など）は送信不能としてスキップ完了扱い
     if (!job.recipient) {
       await prisma.notificationJob.update({

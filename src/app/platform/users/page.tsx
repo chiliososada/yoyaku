@@ -11,11 +11,18 @@ const USER_STATUS_LABEL: Record<string, string> = { ACTIVE: '有効', INVITED: '
 
 export default async function UsersPage() {
   await requirePlatformAdmin();
-  const users = await listPlatformUsers();
+  const { users, total } = await listPlatformUsers();
 
   return (
     <div>
-      <PageHeader title="ユーザー管理" description={`${users.length} 名のユーザー`} />
+      <PageHeader
+        title="ユーザー管理"
+        description={
+          total > users.length
+            ? `${total} 名のユーザー（新しい ${users.length} 名を表示）`
+            : `${total} 名のユーザー`
+        }
+      />
       {users.length === 0 ? (
         <EmptyState message="ユーザーがいません。" />
       ) : (

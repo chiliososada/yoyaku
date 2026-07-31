@@ -92,6 +92,17 @@ export async function getPlanForEdit(planId: string) {
 }
 
 export async function listPlatformUsers(take = 100) {
+  // 件数は必ず実数を数える。一覧の長さを人数として出すと、
+  // 101人目以降がいても永遠に「100 名」と表示され、増えたことに気づけない。
+  const where = { deletedAt: null };
+  const [users, total] = await Promise.all([
+    queryPlatformUsers(take),
+    prisma.user.count({ where }),
+  ]);
+  return { users, total };
+}
+
+function queryPlatformUsers(take: number) {
   return prisma.user.findMany({
     where: { deletedAt: null },
     orderBy: { createdAt: 'desc' },

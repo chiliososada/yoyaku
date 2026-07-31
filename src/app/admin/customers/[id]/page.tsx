@@ -26,7 +26,8 @@ export default async function CustomerDetailPage({ params }: { params: { id: str
   const user = await requireTenantUser();
   let data;
   try {
-    data = await getCustomerDetail(user.tenantId, params.id);
+    const shopIds = user.isPlatformAdmin || user.tenantWide ? null : user.shopScopes;
+    data = await getCustomerDetail(user.tenantId, params.id, shopIds);
   } catch (e) {
     if (isAppError(e) && e.code === 'NOT_FOUND') notFound();
     throw e;

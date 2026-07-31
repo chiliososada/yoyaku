@@ -979,9 +979,38 @@ export async function listBookings(tenantId: string, shopId: string, filter: Boo
   });
 }
 
-export async function listCustomers(tenantId: string, take = 100) {
+/**
+ * 顧客カルテの参照範囲。
+ *
+ * shopIds を渡すと「その店舗の顧客、またはその店舗で予約したことがある顧客」に限定する。
+ * カルテは email/電話/LINE でテナント横断に同定されるため、shopId 一致だけでは
+ * 他店で作られたカルテを持つ常連が自店から見えなくなる。両方を見る。
+ * null（＝店長以上・全社権限）のときは従来どおりテナント全体。
+ */
+function customerScopeWhere(tenantId: string, shopIds: string[] | null) {
+  return {
+    tenantId,
+    deletedAt: null,
+    ...(shopIds && shopIds.length > 0
+      ? {
+          OR: [
+            { shopId: { in: shopIds } },
+            { bookings: { some: { shopId: { in: shopIds }, deletedAt: null } } },
+          ],
+        }
+      : {}),
+  };
+}
+
+export interface CustomerListResult {
+  customers: Awaited<ReturnType<typeof queryCustomers>>;
+  /** 実件数。一覧は take で切り詰めるので、画面の件数表示はこちらを使う。 */
+  total: number;
+}
+
+function queryCustomers(where: ReturnType<typeof customerScopeWhere>, take: number) {
   return prisma.customer.findMany({
-    where: { tenantId, deletedAt: null },
+    where,
     orderBy: { createdAt: 'desc' },
     take,
     select: {
@@ -994,6 +1023,21 @@ export async function listCustomers(tenantId: string, take = 100) {
       _count: { select: { bookings: true } },
     },
   });
+}
+
+export async function listCustomers(
+  tenantId: string,
+  opts: { shopIds?: string[] | null; take?: number } = {},
+): Promise<CustomerListResult> {
+  const take = opts.take ?? 100;
+  const where = customerScopeWhere(tenantId, opts.shopIds ?? null);
+  // 件数は必ず実数を数える。一覧の長さを「顧客数」として出すと、
+  // 101人目以降がいる店でも永遠に「100 名の顧客」と表示されて増えない。
+  const [customers, total] = await Promise.all([
+    queryCustomers(where, take),
+    prisma.customer.count({ where }),
+  ]);
+  return { customers, total };
 }
 
 export async function listStaff(tenantId: string, shopId: string) {
@@ -1132,9 +1176,15 @@ export async function listTenantAuditLogs(tenantId: string, take = 100) {
 }
 
 /** 顧客詳細 + 予約履歴。 */
-export async function getCustomerDetail(tenantId: string, customerId: string) {
+export async function getCustomerDetail(
+  tenantId: string,
+  customerId: string,
+  shopIds: string[] | null = null,
+) {
+  // 店舗スコープの利用者には、自店に関係しないカルテを開かせない
+  // （氏名・連絡先・来店履歴・累計利用額・接客メモまで見える画面のため）。
   const customer = await prisma.customer.findFirst({
-    where: { id: customerId, tenantId, deletedAt: null },
+    where: { id: customerId, ...customerScopeWhere(tenantId, shopIds) },
     select: { id: true, name: true, nameKana: true, email: true, phone: true, note: true, createdAt: true },
   });
   if (!customer) throw Errors.notFound('顧客が見つかりません。');
