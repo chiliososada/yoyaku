@@ -333,6 +333,26 @@ export function BookingWizard({ shop, liffId }: { shop: WizardShop; liffId?: str
     if (step === 'datetime') void fetchDateSummary();
   }, [step, fetchDateSummary]);
 
+  /**
+   * 表示中の月に予約できる日が1つでもあるか。
+   *
+   * 自動移動（下の effect）は**その月の中**しか探さないため、月末に来店した客や
+   * 長期休業中の店では「全部グレーで何も押せないカレンダー」だけが出て、
+   * 理由も次の一手も画面に無い。客は「満席なんだ」と思って離脱する。
+   * 実際、月末（例: 31日）に予約ページを開くと必ずこの状態になる。
+   */
+  const monthFetched = useMemo(
+    () => monthGrid.some((d) => !!d && dateStatus[d] !== undefined),
+    [monthGrid, dateStatus],
+  );
+  const hasBookableInView = useMemo(
+    () =>
+      monthGrid.some(
+        (d) => !!d && d >= today && (dateStatus[d] === 'OPEN' || dateStatus[d] === 'FEW'),
+      ),
+    [monthGrid, dateStatus, today],
+  );
+
   // 選択中の日が満/休なら、その月の最初の予約可能な日へ自動移動。
   useEffect(() => {
     if (step !== 'datetime') return;
@@ -816,6 +836,37 @@ export function BookingWizard({ shop, liffId }: { shop: WizardShop; liffId?: str
               <span><span className="font-medium text-slate-400">×</span> 満</span>
               <span><span className="font-medium text-slate-400">休</span> 休業</span>
             </div>
+
+            {/* この月に押せる日が1つも無いとき。黙っていると「満席なんだ」と思われて離脱する。 */}
+            {monthFetched && !hasBookableInView && (
+              <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-900">
+                <p className="font-medium">{monthLabel(viewMonth)}は空いている日がありません。</p>
+                {viewMonth < maxMonth ? (
+                  <button
+                    type="button"
+                    onClick={() => setViewMonth((v) => addMonths(v, 1))}
+                    className="mt-1.5 inline-flex items-center gap-1 rounded-md bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-amber-700"
+                  >
+                    翌月の空きを見る <ChevronRight className="size-3.5" />
+                  </button>
+                ) : (
+                  <p className="mt-1 text-xs">
+                    現在受付中の期間に空きがありません。
+                    {shop.phone ? (
+                      <>
+                        お手数ですが{' '}
+                        <a href={`tel:${shop.phone}`} className="font-semibold underline">
+                          {shop.phone}
+                        </a>{' '}
+                        へお問い合わせください。
+                      </>
+                    ) : (
+                      'お手数ですが店舗へ直接お問い合わせください。'
+                    )}
+                  </p>
+                )}
+              </div>
+            )}
           </div>
 
           {/* 時間スロット */}

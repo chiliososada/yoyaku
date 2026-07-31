@@ -52,3 +52,48 @@ describe('assignTracks', () => {
     expect(r.blocks[0]!.track).toBe(0);
   });
 });
+
+/**
+ * 「表示中の月に押せる日が1つも無い」判定（予約ウィザードの空状態）。
+ * 月末に来店した客は必ずこの状態になるため、黙って全部グレーにしてはいけない。
+ */
+function hasBookableInMonth(
+  grid: (string | null)[],
+  status: Record<string, string>,
+  today: string,
+): boolean {
+  return grid.some((d) => !!d && d >= today && (status[d] === 'OPEN' || status[d] === 'FEW'));
+}
+
+describe('カレンダーの空状態判定', () => {
+  const july = Array.from({ length: 31 }, (_, i) => `2026-07-${String(i + 1).padStart(2, '0')}`);
+
+  it('月末（31日）に来て当月に空きが無ければ false', () => {
+    const status: Record<string, string> = {};
+    for (const d of july) status[d] = 'FULL';
+    expect(hasBookableInMonth(july, status, '2026-07-31')).toBe(false);
+  });
+
+  it('先の日に空きが1つでもあれば true', () => {
+    const status: Record<string, string> = {};
+    for (const d of july) status[d] = 'FULL';
+    status['2026-07-31'] = 'OPEN';
+    expect(hasBookableInMonth(july, status, '2026-07-31')).toBe(true);
+  });
+
+  it('残少（FEW）も予約できるので true', () => {
+    const status: Record<string, string> = { '2026-07-20': 'FEW' };
+    expect(hasBookableInMonth(july, status, '2026-07-01')).toBe(true);
+  });
+
+  it('過去日に空きがあっても数えない', () => {
+    const status: Record<string, string> = { '2026-07-05': 'OPEN' };
+    expect(hasBookableInMonth(july, status, '2026-07-20')).toBe(false);
+  });
+
+  it('休業のみの月は false（「満」と区別せず、どちらも押せない）', () => {
+    const status: Record<string, string> = {};
+    for (const d of july) status[d] = 'CLOSED';
+    expect(hasBookableInMonth(july, status, '2026-07-01')).toBe(false);
+  });
+});

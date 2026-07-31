@@ -260,7 +260,9 @@ function DayBoard({
       {!s.closedLabel && s.holidayName && (
         <p className="mb-2 text-xs text-muted-foreground">{s.holidayName}（営業）</p>
       )}
-      <div className="overflow-x-auto rounded-xl border bg-white">
+      {/* 枠は中身に合わせる。固定幅のタイムラインを全幅のカードに入れると、
+          右側に用途不明の白地が残って「まだ何かあるのか」と見える。 */}
+      <div className="w-fit max-w-full overflow-x-auto rounded-xl border bg-white">
         <div style={{ width: LABEL_W + trackW }}>
           {/* 時間ヘッダ */}
           <div className="flex border-b bg-slate-50/80">
@@ -318,7 +320,7 @@ function DayBoard({
                       )
                     )}
                   </div>
-                  <div className="relative bg-slate-100/70" style={{ width: trackW, height: laneH }}>
+                  <div className="relative bg-slate-200/70" style={{ width: trackW, height: laneH }}>
                     {/* 勤務時間だけを白く抜く。灰色＝この時間は出勤していない、が一目で分かる。 */}
                     {lane.shifts.map((sh) => (
                       <div
@@ -379,7 +381,7 @@ function DayBoard({
           <span className="size-2.5 rounded-sm border bg-white" /> 出勤時間
         </span>
         <span className="flex items-center gap-1">
-          <span className="size-2.5 rounded-sm bg-slate-100 ring-1 ring-inset ring-slate-200" /> 勤務外
+          <span className="size-2.5 rounded-sm bg-slate-200/70 ring-1 ring-inset ring-slate-300" /> 勤務外
         </span>
         <span>· ブロックをクリックで予約詳細へ</span>
       </div>
