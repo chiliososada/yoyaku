@@ -221,8 +221,14 @@ export async function getBusinessMetrics(now: Date = nowUtc()): Promise<Business
     generatedAt: now,
     currentMrrJpy,
     payingCustomers: paying.length,
+    // トライアル中は2通りある: ①まだ Stripe に来ていない（status なし・trialEndsAt 未来）
+    // ②トライアル期間つきで契約済み（Stripe status='trialing'）。
+    // ②を数え漏らしていたため、トライアル中に申し込んだテナントは
+    // 有料にも計上されず（paying は active のみ）トライアルにも出ず、どの区分にも現れなかった。
     trialingTenants: billable.filter(
-      (t) => !t.stripeSubscriptionStatus && t.trialEndsAt && t.trialEndsAt.getTime() > now.getTime(),
+      (t) =>
+        t.stripeSubscriptionStatus === 'trialing' ||
+        (!t.stripeSubscriptionStatus && t.trialEndsAt != null && t.trialEndsAt.getTime() > now.getTime()),
     ).length,
     pastDueTenants: billable.filter((t) => t.stripeSubscriptionStatus === 'past_due').length,
     canceledTenants: billable.filter((t) => t.stripeSubscriptionStatus === 'canceled').length,

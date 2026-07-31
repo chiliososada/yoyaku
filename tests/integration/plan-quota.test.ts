@@ -130,12 +130,41 @@ describe('月間予約上限（maxBookingsPerMonth）', () => {
     await seedBookings(sc, 5);
     await expect(assertPublicBookingQuota(sc.tenantId)).resolves.toBeUndefined();
   });
+
+  it('後台からの代理登録はクォータに数えない（ゲートの対象外なので）', async () => {
+    const sc = await seedScenario({ staffCount: 1 });
+    createdTenants.push(sc.tenantId);
+    const plan = await prisma.plan.create({
+      data: { code: `quota-src-${sc.tenantId.slice(-8)}`, name: 'テスト経路', priceJpy: 4980, maxBookingsPerMonth: 10 },
+    });
+    createdPlans.push(plan.id);
+    await prisma.tenant.update({
+      where: { id: sc.tenantId },
+      data: { planId: plan.id, billingExempt: false },
+    });
+
+    // 電話予約を上限超まで後台登録しても、オンライン予約は止まらない
+    await seedBookings(sc, 30, 'ADMIN');
+    await expect(assertPublicBookingQuota(sc.tenantId)).resolves.toBeUndefined();
+
+    const usage = await getBookingQuotaUsage(sc.tenantId);
+    // 画面のラベルは「今月のオンライン予約」。後台登録を混ぜると嘘になる。
+    expect(usage.used).toBe(0);
+    expect(usage.exceeded).toBe(false);
+
+    // オンライン予約だけが上限に効く
+    await seedBookings(sc, 11, 'PUBLIC');
+    const after = await getBookingQuotaUsage(sc.tenantId);
+    expect(after.used).toBe(11);
+    await expect(assertPublicBookingQuota(sc.tenantId)).rejects.toThrow();
+  });
 });
 
 /** 予約行を直接投入（クォータ計算は createdAt ベースなので予約エンジンを通す必要がない）。 */
 async function seedBookings(
   sc: { tenantId: string; shopId: string; serviceId: string },
   n: number,
+  source: 'PUBLIC' | 'ADMIN' = 'PUBLIC',
 ): Promise<void> {
   const customer = await prisma.customer.create({
     data: { tenantId: sc.tenantId, shopId: sc.shopId, name: 'quota', email: `q${Date.now()}@t.test` },
@@ -150,6 +179,7 @@ async function seedBookings(
       startAt: new Date(base + i * 3600_000),
       endAt: new Date(base + i * 3600_000 + 1800_000),
       status: 'CONFIRMED' as const,
+      source,
       totalPriceJpy: 1000,
       customerName: 'quota',
     })),

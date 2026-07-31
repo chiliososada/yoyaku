@@ -208,4 +208,46 @@ describe('解約率・転換率・LTV は根拠が無ければ数字を出さな
       expect(m.churnRate30d).toBeGreaterThanOrEqual(0);
     }
   });
+
+  it('Stripe で trialing のテナントもトライアル中に数える', async () => {
+    const plan = await seedPlan('trialing', 9800);
+    const sc = await seedScenario({ staffCount: 1 });
+    createdTenants.push(sc.tenantId);
+    // トライアル期間つきで契約済み（トライアル中に申し込んだ状態）
+    await prisma.tenant.update({
+      where: { id: sc.tenantId },
+      data: {
+        planId: plan.id,
+        billingExempt: false,
+        stripeSubscriptionId: `sub_trialing_${sc.tenantId.slice(-6)}`,
+        stripeSubscriptionStatus: 'trialing',
+        trialEndsAt: new Date(Date.now() + 10 * 86_400_000),
+      },
+    });
+
+    const m = await getBusinessMetrics();
+    expect(m.trialingTenants).toBeGreaterThanOrEqual(1);
+    // 有料には数えない — 二重計上しないこと（有料 = active / past_due）
+    const paying = await prisma.tenant.count({
+      where: {
+        billingExempt: false,
+        deletedAt: null,
+        stripeSubscriptionStatus: { in: ['active', 'past_due'] },
+      },
+    });
+    expect(m.payingCustomers).toBe(paying);
+    // MRR にも乗らない（トライアル中はまだ請求が立っていない）
+    expect(m.currentMrrJpy).toBe(
+      (
+        await prisma.tenant.findMany({
+          where: {
+            billingExempt: false,
+            deletedAt: null,
+            stripeSubscriptionStatus: { in: ['active', 'past_due'] },
+          },
+          select: { plan: { select: { priceJpy: true } } },
+        })
+      ).reduce((a, t) => a + (t.plan?.priceJpy ?? 0), 0),
+    );
+  });
 });

@@ -47,7 +47,10 @@ export async function getBookingQuotaUsage(tenantId: string, now: Date = nowUtc(
       where: { id: tenantId },
       select: { billingExempt: true, plan: { select: { maxBookingsPerMonth: true, name: true } } },
     }),
-    prisma.booking.count({ where: { tenantId, createdAt: { gte: monthStart(now) } } }),
+    // source: 'PUBLIC' 限定。ゲートが対象にしているのも、画面のラベル
+    //「今月のオンライン予約」も、店主への説明「店舗側からの登録は制限されません」も
+    // すべてオンライン予約だけを指しているのに、集計だけが後台登録・取込を含んでいた。
+    prisma.booking.count({ where: { tenantId, source: 'PUBLIC', createdAt: { gte: monthStart(now) } } }),
   ]);
   const limit = tenant?.plan?.maxBookingsPerMonth ?? DEFAULT_MAX_BOOKINGS_PER_MONTH;
   return {
@@ -72,11 +75,16 @@ export async function assertPublicBookingQuota(tenantId: string, now: Date = now
   const limit = tenant.plan?.maxBookingsPerMonth ?? DEFAULT_MAX_BOOKINGS_PER_MONTH;
   if (limit <= 0) return;
 
-  const used = await prisma.booking.count({ where: { tenantId, createdAt: { gte: monthStart(now) } } });
+  // 後台からの代理登録・取込はゲートの対象外なので、カウントにも含めない。
+  // 含めると、オンライン予約が0件でも電話予約だけで上限に達し、客側だけが
+  // 理由の分からない「受け付けできません」で締め出される。
+  const used = await prisma.booking.count({
+    where: { tenantId, source: 'PUBLIC', createdAt: { gte: monthStart(now) } },
+  });
   if (used < limit) return;
 
   if (used < Math.floor(limit * GRACE_RATIO)) {
-    // 猶予帯: 通すが記録は残す（後台での警告表示・営業フォローの материал）
+    // 猶予帯: 通すが記録は残す（後台での警告表示・営業フォローの 材料）
     logger.warn(
       { tenantId, used, limit, plan: tenant.plan?.name },
       '[quota] monthly booking limit exceeded (within grace, allowed)',

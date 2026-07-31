@@ -41,6 +41,14 @@ interface Props {
   quota?: { used: number; limit: number; planName: string };
 }
 
+/** ロック時の見出し。実際の契約状態に応じて出し分ける（固定文だと事実と食い違う）。 */
+const LOCK_TITLE: Record<string, string> = {
+  past_due: 'お支払いを確認できないため、ご利用を停止しています',
+  unpaid: 'お支払いを確認できないため、ご利用を停止しています',
+  canceled: 'ご契約が終了しています',
+  incomplete_expired: 'お申し込みが完了しなかったため、ご利用を停止しています',
+};
+
 const STATUS_LABEL: Record<string, string> = {
   active: 'ご契約中',
   trialing: 'トライアル中（Stripe）',
@@ -219,13 +227,32 @@ export function BillingPanel(props: Props) {
       {props.state === 'LOCKED' && (
         <div className="flex items-start gap-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm">
           <Lock className="mt-0.5 size-5 shrink-0 text-destructive" />
-          <div>
-            <p className="font-medium text-destructive">無料トライアルが終了しました</p>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              {props.canManage
-                ? '引き続きご利用いただくには、下記のプランにお申し込みください。予約ページ（お客様向け）は引き続き稼働しています。'
-                : 'ご利用を再開するには、オーナーの方がプランへお申し込みください。'}
-            </p>
+          <div className="grid gap-2">
+            {/* 見出しを固定文にしていたため、何ヶ月も課金していた店主が支払い失敗で停止した際にも
+                「無料トライアルが終了しました」と表示されていた。事実と違ううえ、
+                「カードを直せばいい」と気づけない。実際の状態から文面を出し分ける。 */}
+            <div>
+              <p className="font-medium text-destructive">{LOCK_TITLE[props.subscriptionStatus ?? ''] ?? '無料トライアルが終了しました'}</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                {!props.canManage
+                  ? 'ご利用を再開するには、オーナーの方がお手続きをお願いします。'
+                  : props.subscriptionStatus === 'unpaid' || props.subscriptionStatus === 'past_due'
+                    ? 'お支払い方法を更新すると、そのままご利用を再開できます。予約ページ（お客様向け）は引き続き稼働しています。'
+                    : props.subscriptionStatus === 'canceled'
+                      ? '再開するには、下記のプランにお申し込みください。予約ページ（お客様向け）は引き続き稼働しています。'
+                      : '引き続きご利用いただくには、下記のプランにお申し込みください。予約ページ（お客様向け）は引き続き稼働しています。'}
+              </p>
+            </div>
+            {/* 支払い手段の管理画面への導線。SUBSCRIBED の中だけに置いていたため、
+                支払い失敗でロックされた店主はカードを直す手段が画面から消えていた（完全な行き止まり）。 */}
+            {props.canManage && props.hasPaymentAccount && (
+              <div>
+                <Button variant="outline" size="sm" onClick={openPortal} disabled={pending}>
+                  {pending && !busyPlanId ? <Loader2 className="size-4 animate-spin" /> : <CreditCard className="size-4" />}
+                  お支払い方法を更新する
+                </Button>
+              </div>
+            )}
           </div>
         </div>
       )}
