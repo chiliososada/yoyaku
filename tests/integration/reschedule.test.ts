@@ -87,4 +87,40 @@ describe('rescheduleBooking', () => {
       }),
     ).rejects.toMatchObject({ code: 'CANCELLATION_DEADLINE_PASSED' });
   });
+
+  it('日時変更しても明細価格は予約時のまま（値上げが過去の売上を書き換えない）', async () => {
+    const sc = await seedScenario({ staffCount: 1 });
+    created.push(sc.tenantId);
+    const s0 = sc.staffIds[0]!;
+
+    const b = await createBooking({
+      tenantId: sc.tenantId, shopId: sc.shopId, serviceId: sc.serviceId, staffId: s0,
+      startAt: new Date('2026-07-06T01:00:00Z'), customer: { name: 'P', email: 'p@x.com' }, now: NOW,
+    });
+    const before = await prisma.bookingItem.findFirst({
+      where: { bookingId: b.id, active: true }, orderBy: { sortOrder: 'asc' }, select: { priceJpy: true },
+    });
+    const bookedPrice = before!.priceJpy;
+    expect(bookedPrice).toBe(5000); // seedScenario のメニュー価格
+
+    // 予約後にメニューを値上げ
+    await prisma.service.update({ where: { id: sc.serviceId }, data: { priceJpy: 9000 } });
+
+    await rescheduleBooking({
+      bookingId: b.id, newStartAt: new Date('2026-07-06T02:00:00Z'), newStaffId: s0, actorType: 'USER', now: NOW,
+    });
+
+    const after = await prisma.bookingItem.findFirst({
+      where: { bookingId: b.id, active: true }, orderBy: { sortOrder: 'asc' }, select: { priceJpy: true },
+    });
+    // 「日時変更は再注文ではない」ので据え置き。現在価格(9000)で書き換わってはいけない。
+    expect(after!.priceJpy).toBe(bookedPrice);
+
+    // 予約合計と明細合計が食い違わない（同じ画面の売上カードとメニュー別が一致する条件）
+    const booking = await prisma.booking.findUnique({ where: { id: b.id }, select: { totalPriceJpy: true, nominationFeeJpy: true } });
+    const itemSum = await prisma.bookingItem.aggregate({
+      where: { bookingId: b.id, active: true }, _sum: { priceJpy: true },
+    });
+    expect((itemSum._sum.priceJpy ?? 0) + booking!.nominationFeeJpy).toBe(booking!.totalPriceJpy);
+  });
 });

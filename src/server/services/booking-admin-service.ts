@@ -78,10 +78,13 @@ export async function updateBookingStatus(
       },
     });
 
-    // キャンセル/No-Show: 未送信リマインドを無効化 + キャンセル通知
+    // キャンセル/No-Show: この予約の未送信通知をすべて無効化 + キャンセル通知
+    // リマインドだけ止めても、配信障害で滞留していた確認通知がキャンセル後に届く
+    // （客はキャンセル失敗と誤解し、店長は無い予約を枠に入れる）。
+    // キャンセル通知はこの後に作るので巻き添えにならない。
     if (input.toStatus === 'CANCELLED' || input.toStatus === 'NO_SHOW') {
       await tx.notificationJob.updateMany({
-        where: { bookingId: booking.id, template: 'BOOKING_REMINDER', status: 'PENDING' },
+        where: { bookingId: booking.id, status: 'PENDING' },
         data: { status: 'CANCELLED' },
       });
     }

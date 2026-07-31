@@ -15,6 +15,7 @@ import {
   formatDateTimeInTz,
   formatTimeInTz,
 } from '@/lib/booking-display';
+import { customerInfoSchema } from '@/lib/validation/booking';
 
 interface Staff {
   id: string;
@@ -55,6 +56,8 @@ function isOnSale(s: Service): boolean {
 export interface WizardShop {
   slug: string;
   name: string;
+  /** 予約が取れなかったときの連絡先。無いと「店舗へお問い合わせください」が行き止まりになる。 */
+  phone: string | null;
   address: string | null;
   prefecture: string | null;
   city: string | null;
@@ -135,6 +138,8 @@ export function BookingWizard({ shop, liffId }: { shop: WizardShop; liffId?: str
   const submittingRef = useRef(false); // 同期ガード（disabled 反映前の二度押し対策）
   const idempotencyKeyRef = useRef<string | null>(null); // 予約1回分の冪等キー（リトライで再利用、成功で再生成）
   const [error, setError] = useState<string | null>(null);
+  /** お客様情報の項目別エラー。最後の確定ボタンまで持ち越さない。 */
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [result, setResult] = useState<{
     id: string;
     cancellationToken: string;
@@ -387,6 +392,38 @@ export function BookingWizard({ shop, liffId }: { shop: WizardShop; liffId?: str
     }
   };
 
+  /** ご要望欄の上限（サーバの createBookingSchema と同じ）。 */
+  const NOTE_MAX = 1000;
+
+  /**
+   * 確認画面へ進む前に形式を検証する。
+   * サーバまで持ち越すと、route() が ZodError を一律「入力内容を確認してください。」に潰すため、
+   * 客は日時・氏名・連絡先まで入れ終えた最後の確定ボタンで初めて弾かれ、しかもどの項目が
+   * 悪いのか画面のどこにも出ない。直しようがないので離脱する。
+   */
+  const goToConfirm = () => {
+    const parsed = customerInfoSchema.safeParse({
+      name: form.name,
+      nameKana: form.nameKana,
+      email: form.email,
+      phone: form.phone,
+    });
+    const next: Record<string, string> = {};
+    if (!parsed.success) {
+      for (const issue of parsed.error.issues) {
+        const key = String(issue.path[0] ?? '');
+        if (key && !next[key]) next[key] = issue.message;
+      }
+    }
+    if (form.note.trim().length > NOTE_MAX) {
+      next.note = `ご要望は${NOTE_MAX}文字以内で入力してください（現在 ${form.note.trim().length} 文字）。`;
+    }
+    setFieldErrors(next);
+    if (Object.keys(next).length > 0) return;
+    setError(null);
+    setStep('confirm');
+  };
+
   const stepIndex = STEPS.findIndex((s) => s.key === step);
   const staffName = (id: string | null) => {
     if (!id) return 'おまかせ';
@@ -493,7 +530,18 @@ export function BookingWizard({ shop, liffId }: { shop: WizardShop; liffId?: str
 
       {error && (
         <div className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          {error}
+          <p>{error}</p>
+          {/* サーバの文面は「店舗へお問い合わせください」と言うのに、このページには
+              連絡先がどこにも無かった（QR/LIFF から直接来る客はホームページを経由しない）。
+              満席・締切・担当不在・受付停止のいずれでも、番号があれば必ず代替手段を示す。 */}
+          {shop.phone && (
+            <p className="mt-1">
+              <a href={`tel:${shop.phone}`} className="font-semibold underline">
+                {shop.phone}
+              </a>
+              <span> に発信して店舗へご相談いただけます。</span>
+            </p>
+          )}
         </div>
       )}
 
@@ -845,23 +893,28 @@ export function BookingWizard({ shop, liffId }: { shop: WizardShop; liffId?: str
             </div>
           ) : (
             <>
-              <Field label="お名前" required>
+              <Field label="お名前" required error={fieldErrors.name}>
                 <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="山田 太郎" />
               </Field>
-              <Field label="フリガナ">
+              <Field label="フリガナ" error={fieldErrors.nameKana}>
                 <Input value={form.nameKana} onChange={(e) => setForm({ ...form, nameKana: e.target.value })} placeholder="ヤマダ タロウ" />
               </Field>
-              <Field label="メールアドレス">
+              <Field label="メールアドレス" error={fieldErrors.email}>
                 <Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="taro@example.com" />
               </Field>
             </>
           )}
-          <Field label={isLineMode ? '電話番号（任意）' : '電話番号'}>
+          <Field label={isLineMode ? '電話番号（任意）' : '電話番号'} error={fieldErrors.phone}>
             <Input type="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="090-1234-5678" />
           </Field>
-          <Field label="ご要望（任意）">
+          <Field
+            label="ご要望（任意）"
+            error={fieldErrors.note}
+            hint={form.note.length > NOTE_MAX * 0.8 ? `${form.note.length} / ${NOTE_MAX} 文字` : undefined}
+          >
             <textarea
               className="flex min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              maxLength={NOTE_MAX}
               value={form.note}
               onChange={(e) => setForm({ ...form, note: e.target.value })}
             />
@@ -873,7 +926,7 @@ export function BookingWizard({ shop, liffId }: { shop: WizardShop; liffId?: str
           )}
           <Button
             disabled={isLineMode ? !form.name : !form.name || (!form.email && !form.phone)}
-            onClick={() => setStep('confirm')}
+            onClick={goToConfirm}
             className="w-full"
           >
             確認画面へ
@@ -952,7 +1005,19 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-function Field({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
+function Field({
+  label,
+  required,
+  error,
+  hint,
+  children,
+}: {
+  label: string;
+  required?: boolean;
+  error?: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="grid gap-1.5">
       <Label>
@@ -960,6 +1025,11 @@ function Field({ label, required, children }: { label: string; required?: boolea
         {required && <span className="ml-1 text-destructive">*</span>}
       </Label>
       {children}
+      {error ? (
+        <p className="text-xs font-medium text-destructive">{error}</p>
+      ) : (
+        hint && <p className="text-xs text-muted-foreground">{hint}</p>
+      )}
     </div>
   );
 }

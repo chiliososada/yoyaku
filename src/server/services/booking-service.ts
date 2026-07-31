@@ -1064,9 +1064,17 @@ export async function cancelBooking(input: CancelBookingInput): Promise<{ id: st
     });
     // booking_items.active は status 変更トリガで false に同期される（占有解放）
 
-    // 未送信のリマインドを無効化（キャンセル済みにリマインドを送らない）
+    /**
+     * この予約について未送信の通知をすべて無効化する。
+     *
+     * リマインドだけを止めていたため、SMTP/LINE 障害で確認メールが outbox に滞留していると
+     * （この outbox はまさにその状況で 150 分粘るよう作られている）、キャンセル後に
+     * 「ご予約を承りました」「🔔 新規予約が入りました」が届いていた。
+     * 客はキャンセルが失敗したと思って電話し、店長は存在しない予約を枠に入れる。
+     * キャンセル通知そのものはこの更新の**後**に作られるので巻き添えにならない。
+     */
     await tx.notificationJob.updateMany({
-      where: { bookingId: b.id, template: 'BOOKING_REMINDER', status: 'PENDING' },
+      where: { bookingId: b.id, status: 'PENDING' },
       data: { status: 'CANCELLED' },
     });
 
@@ -1171,7 +1179,15 @@ export async function rescheduleBooking(input: RescheduleBookingInput): Promise<
             id: true, tenantId: true, shopId: true, status: true, startAt: true, staffId: true,
             serviceId: true, customerEmail: true, customerLineUserId: true,
             shop: { select: { timezone: true, closeOnNationalHolidays: true } },
-            items: { orderBy: { sortOrder: 'asc' }, select: { serviceId: true, options: { select: { optionId: true } } } },
+            items: {
+              orderBy: { sortOrder: 'asc' },
+              select: {
+                serviceId: true,
+                // 予約時に確定した金額。日時変更で作り直すときも**この値を持ち越す**。
+                priceJpy: true,
+                options: { select: { optionId: true, name: true, priceJpy: true, extraDurationMin: true } },
+              },
+            },
           },
         });
         if (!b) throw Errors.notFound('予約が見つかりません。');
@@ -1188,10 +1204,20 @@ export async function rescheduleBooking(input: RescheduleBookingInput): Promise<
         // 既存明細から予約構成（サービス順 + オプション）を復元
         const seen = new Set<string>();
         const serviceItems: ServiceItemInput[] = [];
+        /**
+         * 予約時に確定した金額のスナップショット（サービスID → 小計 / オプション明細）。
+         *
+         * 日時変更は「再注文」ではないので料金は据え置き（この関数の契約）。にもかかわらず
+         * 明細を作り直すときに現在のメニュー価格を使うと、値上げ後に日時変更しただけで
+         * **過去の予約のメニュー別売上が遡って書き換わり**、同じ画面の売上カード
+         * （booking.totalPriceJpy 集計）と合わなくなる。客が承諾した金額とも食い違う。
+         */
+        const priceSnapshot = new Map<string, { subtotalJpy: number; options: { optionId: string | null; name: string; priceJpy: number; extraDurationMin: number }[] }>();
         for (const it of b.items) {
           if (seen.has(it.serviceId)) continue;
           seen.add(it.serviceId);
           serviceItems.push({ serviceId: it.serviceId, optionIds: it.options.map((o) => o.optionId).filter((x): x is string => !!x) });
+          priceSnapshot.set(it.serviceId, { subtotalJpy: it.priceJpy, options: it.options });
         }
 
         const tz = b.shop.timezone;
@@ -1292,7 +1318,27 @@ export async function rescheduleBooking(input: RescheduleBookingInput): Promise<
         }
         const finalOcc = computeChainOccupancy({ startAt: input.newStartAt, parts: combo.parts, staffId: assignedStaffId });
 
-        // (3) 新明細を作成（createBooking と同形）
+        // (3) 新明細を作成（createBooking と同形。ただし金額は予約時のスナップショット）
+        const snapshotOptions = (
+          serviceId: string,
+          svc: { options: { id: string; name: string; priceJpy: number; extraDurationMin: number }[] },
+        ) => {
+          const snap = priceSnapshot.get(serviceId);
+          if (snap && snap.options.length > 0) {
+            return snap.options.map((o) => ({
+              optionId: o.optionId,
+              name: o.name,
+              priceJpy: o.priceJpy,
+              extraDurationMin: o.extraDurationMin,
+            }));
+          }
+          return svc.options.map((o) => ({
+            optionId: o.id,
+            name: o.name,
+            priceJpy: o.priceJpy,
+            extraDurationMin: o.extraDurationMin,
+          }));
+        };
         let sortOrder = 0;
         const itemCreates = finalOcc.parts.flatMap((part, pi) => {
           const svc = combo.services[pi]!;
@@ -1305,11 +1351,12 @@ export async function rescheduleBooking(input: RescheduleBookingInput): Promise<
             endAt: iv.end,
             serviceEndAt: part.serviceEndAt,
             bufferAfterMin: idx === part.intervals.length - 1 ? svc.bufferAfterMin : 0,
-            priceJpy: idx === 0 ? svc.subtotalJpy : 0,
+            // 料金は予約時のスナップショットを持ち越す（現在価格で再計算しない）
+            priceJpy: idx === 0 ? (priceSnapshot.get(part.serviceId)?.subtotalJpy ?? svc.subtotalJpy) : 0,
             active: true,
             sortOrder: sortOrder++,
-            ...(idx === 0 && svc.options.length > 0
-              ? { options: { create: svc.options.map((o) => ({ optionId: o.id, name: o.name, priceJpy: o.priceJpy, extraDurationMin: o.extraDurationMin })) } }
+            ...(idx === 0 && snapshotOptions(part.serviceId, svc).length > 0
+              ? { options: { create: snapshotOptions(part.serviceId, svc) } }
               : {}),
           }));
         });

@@ -159,6 +159,42 @@ describe('公開: トークンキャンセル', () => {
     expect(after!.status).toBe('CANCELLED');
   });
 
+  it('キャンセル時は未送信の確認通知も無効化する（キャンセル後に「承りました」を送らない）', async () => {
+    const sc = await seedScenario({ staffCount: 1, staffCapacity: 1 });
+    createdTenants.push(sc.tenantId);
+    const slot = await firstAvailable(sc);
+    const b = await createBooking({
+      tenantId: sc.tenantId, shopId: sc.shopId, serviceId: sc.serviceId, staffId: null,
+      startAt: slot.startAt, customer: { name: 'C', email: 'confirm@test.com' }, now: NOW,
+    });
+    // 配信障害で確認通知が PENDING のまま滞留している状況（outbox は 150 分粘る設計）
+    const pendingBefore = await prisma.notificationJob.findMany({
+      where: { bookingId: b.id, status: 'PENDING' },
+      select: { template: true },
+    });
+    expect(pendingBefore.map((j) => j.template)).toContain('BOOKING_CONFIRMED');
+
+    await cancelBooking({ token: b.cancellationToken, now: NOW });
+
+    const stillPending = await prisma.notificationJob.findMany({
+      where: { bookingId: b.id, status: 'PENDING' },
+      select: { template: true },
+    });
+    // 残ってよいのはキャンセル通知だけ。確認・リマインド・店長向け新規は全て無効化。
+    expect(stillPending.every((j) => j.template.includes('CANCEL'))).toBe(true);
+    const confirmed = await prisma.notificationJob.findFirst({
+      where: { bookingId: b.id, template: 'BOOKING_CONFIRMED' },
+      select: { status: true },
+    });
+    expect(confirmed!.status).toBe('CANCELLED');
+    // キャンセル通知自体は巻き添えにならず送られる
+    const cancelJob = await prisma.notificationJob.findFirst({
+      where: { bookingId: b.id, template: 'BOOKING_CANCELLED' },
+      select: { status: true },
+    });
+    expect(cancelJob!.status).toBe('PENDING');
+  });
+
   it('キャンセル期限を過ぎた予約はキャンセル不可', async () => {
     const sc = await seedScenario({ staffCount: 1 });
     createdTenants.push(sc.tenantId);

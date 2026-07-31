@@ -28,6 +28,8 @@ export function RescheduleForm({
   const [staffId, setStaffId] = useState<string>(currentStaffId ?? '');
   const [slots, setSlots] = useState<AdminSlot[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  /** 表示中の枠がどの条件で取得されたか。日付/担当を変えたら必ず破棄する。 */
+  const [searchedFor, setSearchedFor] = useState<{ date: string; staffId: string } | null>(null);
   const [loading, startLoad] = useTransition();
   const [submitting, startSubmit] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -43,7 +45,29 @@ export function RescheduleForm({
         return;
       }
       setSlots(res.data.slots);
+      setSearchedFor({ date, staffId });
     });
+  };
+
+  /**
+   * 条件を変えたら枠と選択を捨てる。
+   * 残したままだと、日付を変えても前の日の枠が押せる状態で残り、枠チップは時刻しか出さないため
+   * 「6/22 に変えたつもりが 6/15 のまま確定」しても画面上どこにも矛盾が出ない。
+   * 予約を店主が意図しない日に動かす操作なので、UI 側で成立させない。
+   */
+  const changeDate = (v: string) => {
+    setDate(v);
+    setSlots(null);
+    setSelected(null);
+    setSearchedFor(null);
+    setError(null);
+  };
+  const changeStaff = (v: string) => {
+    setStaffId(v);
+    setSlots(null);
+    setSelected(null);
+    setSearchedFor(null);
+    setError(null);
   };
 
   const confirm = () => {
@@ -65,11 +89,11 @@ export function RescheduleForm({
       <div className="flex flex-wrap items-end gap-2">
         <label className="grid gap-1 text-xs text-muted-foreground">
           日付
-          <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="h-9 w-40" />
+          <Input type="date" value={date} onChange={(e) => changeDate(e.target.value)} className="h-9 w-40" />
         </label>
         <label className="grid gap-1 text-xs text-muted-foreground">
           担当
-          <Select value={staffId} onChange={(e) => setStaffId(e.target.value)} className="h-9 w-36">
+          <Select value={staffId} onChange={(e) => changeStaff(e.target.value)} className="h-9 w-36">
             <option value="">おまかせ</option>
             {staffOptions.map((s) => (
               <option key={s.id} value={s.id}>{s.name}</option>
@@ -83,9 +107,14 @@ export function RescheduleForm({
 
       {slots && (
         slots.length === 0 ? (
-          <p className="rounded-md bg-muted/50 py-4 text-center text-sm text-muted-foreground">この日は空き枠がありません。</p>
+          <p className="rounded-md bg-muted/50 py-4 text-center text-sm text-muted-foreground">
+            {searchedFor ? `${searchedFor.date} は空き枠がありません。` : 'この日は空き枠がありません。'}
+          </p>
         ) : (
-          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+          <div className="grid gap-2">
+            {/* 枠チップは時刻しか出さないので、どの日の枠なのかを必ず添える */}
+            <p className="text-xs text-muted-foreground">{searchedFor?.date} の空き枠</p>
+            <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
             {slots.map((sl) => {
               const on = selected === sl.startAt;
               return (
@@ -106,8 +135,12 @@ export function RescheduleForm({
                 </button>
               );
             })}
+            </div>
           </div>
         )
+      )}
+      {!slots && (
+        <p className="text-xs text-muted-foreground">「空き枠を表示」を押すと、選んだ日付・担当の空き時間が出ます。</p>
       )}
 
       <div>

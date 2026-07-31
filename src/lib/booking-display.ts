@@ -4,7 +4,10 @@
 export const SLOT_REASON_LABEL: Record<string, string> = {
   SLOT_FULL: '満席',
   OUTSIDE_BUSINESS_HOURS: '時間外',
-  STAFF_UNAVAILABLE: '指名不可',
+  // 「指名」と書かない: おまかせ予約でも出勤者が0人ならこの理由になるため、
+  // 誰も指名していない客が「指名不可」と言われて意味が分からなくなる。
+  // サーバ側の文面は既に同じ理由で修正済み（booking-service.ts の STAFF_UNAVAILABLE メッセージ）。
+  STAFF_UNAVAILABLE: '担当不在',
   LEAD_TIME_VIOLATION: '受付終了',
   BOOKING_WINDOW_EXCEEDED: '受付前',
 };
