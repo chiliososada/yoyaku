@@ -54,6 +54,12 @@ export default async function StaffPage() {
                 </Td>
                 <Td className="text-right">
                   <div className="inline-flex items-center gap-2">
+                    <Link
+                      href={`/admin/schedule?view=week&staff=${s.id}`}
+                      className="rounded-md border px-2.5 py-1 text-xs hover:bg-slate-50"
+                    >
+                      予定
+                    </Link>
                     <Link href={`/admin/staff/${s.id}/schedule`} className="inline-flex items-center gap-1 rounded-md border px-2.5 py-1 text-xs hover:bg-slate-50">
                       <CalendarClock className="size-3.5" /> シフト
                     </Link>

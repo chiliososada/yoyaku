@@ -3,6 +3,11 @@
  */
 import { prisma } from '@/lib/db';
 import { Errors } from '@/lib/errors';
+import { loadRangeContext, type RangeContext } from '@/server/repositories/booking-repository';
+import { resolveOpenIntervalsForDate } from '@/domain/booking/business-hours';
+import { resolveStaffWorkingIntervals } from '@/domain/booking/schedules';
+import type { DayStatus } from '@/domain/booking/types';
+import { jpHolidayName } from '@/lib/jp-holidays';
 import {
   zonedDateMinutesToUtc,
   todayInZone,
@@ -493,7 +498,14 @@ export async function getBookingsForExport(tenantId: string, shopId: string, tim
   });
 }
 
-// ---- 日次スケジュール（タイムライン: スタッフ×時間帯）----
+// ---- スケジュールボード（日/週 × スタッフ絞り込み）----
+//
+// 予約だけを描いていた頃は「今日この人は何時から出勤なのか」が画面から分からず、
+// 店主は代理予約のたびにシフト設定ページを別途開いて確認するしかなかった。
+// ここでは営業時間・臨時休業・祝日休業・スタッフのシフト（曜日＋個別の上書き）を
+// 予約エンジンと**同じ純関数**で合成し、「実際に働く時間」を返す。
+// 別ロジックで再実装すると、画面の表示と実際の予約可否がずれて誰も信じられなくなる。
+
 export interface ScheduleBlock {
   id: string;
   customerName: string;
@@ -502,16 +514,176 @@ export interface ScheduleBlock {
   endMin: number;
   status: string;
 }
+
+/** 勤務区間（店舗ローカル 0:00 からの分）。営業時間との重なりだけを残した実働。 */
+export interface ShiftSpan {
+  startMin: number;
+  endMin: number;
+}
+
+export interface ScheduleStaffOption {
+  id: string;
+  name: string;
+}
+
+export interface DayScheduleLane {
+  key: string; // staffId、担当なしは '__none__'
+  name: string;
+  shifts: ShiftSpan[];
+  bookings: ScheduleBlock[];
+  /** 退職・停止済みスタッフのレーン。予約だけが残っている状態。 */
+  inactive?: boolean;
+}
+
 export interface DaySchedule {
   date: string;
   timezone: string;
   openMin: number;
   closeMin: number;
   isClosed: boolean;
+  /** 休業の理由（定休日/祝日/臨時休業）。空欄のまま放置すると原因が分からない。 */
+  closedLabel: string | null;
+  /** 祝日名（あれば）。休業でなくても表示する。 */
+  holidayName: string | null;
   prevDate: string;
   nextDate: string;
   today: string;
-  lanes: { key: string; name: string; bookings: ScheduleBlock[] }[];
+  lanes: DayScheduleLane[];
+  staffOptions: ScheduleStaffOption[];
+  /** 実際に適用された絞り込み（未知のIDは null に丸められる）。画面の選択状態はこれに従う。 */
+  selectedStaffId: string | null;
+}
+
+export interface WeekDayCell {
+  date: string;
+  shifts: ShiftSpan[];
+  bookingCount: number;
+}
+
+export interface WeekScheduleColumn {
+  date: string;
+  month: number;
+  day: number;
+  dow: number;
+  isClosed: boolean;
+  closedLabel: string | null;
+  holidayName: string | null;
+  isToday: boolean;
+}
+
+export interface WeekSchedule {
+  from: string;
+  to: string;
+  timezone: string;
+  prevDate: string;
+  nextDate: string;
+  today: string;
+  columns: WeekScheduleColumn[];
+  rows: { staffId: string; name: string; days: WeekDayCell[]; inactive?: boolean }[];
+  staffOptions: ScheduleStaffOption[];
+  /** 実際に適用された絞り込み（未知のIDは null に丸められる）。画面の選択状態はこれに従う。 */
+  selectedStaffId: string | null;
+}
+
+const DAY_STATUS_LABEL: Record<string, string> = {
+  REGULAR_CLOSED: '定休日',
+  HOLIDAY_CLOSED: '祝日休業',
+  TEMP_CLOSED: '臨時休業',
+};
+
+/**
+ * 稼働スタッフ（並び順つき）。staffId を渡すとその1名に絞る。
+ *
+ * 知らない staffId（他店舗のID・退職者・URL の打ち間違い）が来たら**絞り込みを無かったことにする**。
+ * そのまま空で返すと「スタッフがいません」とだけ出て、絞り込みチップは『全員』が選択された状態になり、
+ * 店主から見ると理由の分からない空の表になる。
+ */
+async function loadBoardStaff(tenantId: string, shopId: string, staffId?: string | null) {
+  const all = await prisma.staff.findMany({
+    where: { tenantId, shopId, status: 'ACTIVE', deletedAt: null },
+    orderBy: { sortOrder: 'asc' },
+    select: { id: true, name: true, displayName: true },
+  });
+  const options: ScheduleStaffOption[] = all.map((s) => ({ id: s.id, name: s.displayName ?? s.name }));
+  const resolved = staffId && all.some((s) => s.id === staffId) ? staffId : null;
+  const selected = resolved ? all.filter((s) => s.id === resolved) : all;
+  return { options, selected, selectedStaffId: resolved };
+}
+
+/**
+ * 予約が参照しているのに稼働スタッフ一覧に居ないスタッフを解決する。
+ *
+ * 退職処理（softDeleteStaff）は既存予約を取り消しも付け替えもしない。
+ * そのため「担当者が退職済みの予約」が普通に残るが、レーンを稼働スタッフだけで作ると
+ * その予約は**どのレーンにも入らず画面から消える**——タイムラインの幅だけは広がるので、
+ * 店主には「空欄が伸びている」としか見えない。客は当日ふつうに来店する。
+ * ここで名前を引き当て、退職者のレーンとして必ず描く。
+ */
+async function loadInactiveStaffFor(
+  tenantId: string,
+  shopId: string,
+  ids: string[],
+): Promise<{ id: string; name: string }[]> {
+  if (ids.length === 0) return [];
+  const rows = await prisma.staff.findMany({
+    where: { tenantId, shopId, id: { in: ids } },
+    orderBy: { sortOrder: 'asc' },
+    select: { id: true, name: true, displayName: true },
+  });
+  return rows.map((r) => ({ id: r.id, name: r.displayName ?? r.name }));
+}
+
+/**
+ * 1日分の「店舗の営業区間」と「スタッフ別の実働区間」を分で返す。
+ * 実働 = シフト ∩ 営業区間。休業日にシフトだけ残っていても働けないため、
+ * そのまま出すと画面が嘘をつく（客の予約画面には出ないのに、店主の画面では出勤に見える）。
+ */
+function resolveDayShifts(params: {
+  date: string;
+  timezone: string;
+  staffIds: string[];
+  ctx: RangeContext;
+  closeOnNationalHolidays: boolean;
+}): { dayStatus: DayStatus; openSpans: ShiftSpan[]; shiftsByStaff: Map<string, ShiftSpan[]> } {
+  const { date, timezone, staffIds, ctx, closeOnNationalHolidays } = params;
+  const dayStartMs = zonedDateMinutesToUtc(date, 0, timezone).getTime();
+  const toMin = (d: Date) => Math.round((d.getTime() - dayStartMs) / 60_000);
+
+  const resolved = resolveOpenIntervalsForDate({
+    date,
+    timeZone: timezone,
+    businessHours: ctx.businessHours,
+    specialDay: ctx.specialDaysByDate.get(date) ?? null,
+    isNationalHoliday: ctx.holidayDates.has(date),
+    closeOnNationalHolidays,
+  });
+  const openSpans = resolved.openIntervals.map((i) => ({ startMin: toMin(i.start), endMin: toMin(i.end) }));
+
+  const shiftsByStaff = new Map<string, ShiftSpan[]>();
+  if (openSpans.length > 0 && staffIds.length > 0) {
+    const working = resolveStaffWorkingIntervals({
+      date,
+      timeZone: timezone,
+      staffIds,
+      schedules: [...ctx.recurringSchedules, ...(ctx.overridesByDate.get(date) ?? [])],
+    });
+    for (const w of working) {
+      const s = toMin(w.start);
+      const e = toMin(w.end);
+      for (const o of openSpans) {
+        const start = Math.max(s, o.startMin);
+        const end = Math.min(e, o.endMin);
+        if (end > start) {
+          const arr = shiftsByStaff.get(w.staffId) ?? [];
+          arr.push({ startMin: start, endMin: end });
+          shiftsByStaff.set(w.staffId, arr);
+        }
+      }
+    }
+    for (const arr of shiftsByStaff.values()) arr.sort((a, b) => a.startMin - b.startMin);
+  }
+
+  return { dayStatus: resolved.dayStatus, openSpans, shiftsByStaff };
 }
 
 /** 指定日のスタッフ別タイムライン。前台が一日を一目で把握するためのボード。 */
@@ -520,24 +692,45 @@ export async function getDaySchedule(
   shopId: string,
   timezone: string,
   date: string,
+  staffId?: string | null,
 ): Promise<DaySchedule> {
   const dayStart = zonedDateMinutesToUtc(date, 0, timezone);
   const dayEnd = zonedDateMinutesToUtc(date, MINUTES_PER_DAY, timezone);
-  const dow = isoDateDayOfWeek(date);
+  const nextDate = isoDateAddDays(date, 1);
 
-  const [bh, staff, bookings] = await Promise.all([
-    prisma.businessHours.findMany({ where: { shopId, dayOfWeek: dow }, select: { openMinute: true, closeMinute: true } }),
-    prisma.staff.findMany({
-      where: { tenantId, shopId, status: 'ACTIVE', deletedAt: null },
-      orderBy: { sortOrder: 'asc' },
-      select: { id: true, name: true, displayName: true },
-    }),
+  const { options, selected, selectedStaffId } = await loadBoardStaff(tenantId, shopId, staffId);
+  const staffIds = selected.map((s) => s.id);
+
+  const [shop, ctx, bookings] = await Promise.all([
+    prisma.shop.findFirst({ where: { id: shopId, tenantId }, select: { closeOnNationalHolidays: true } }),
+    loadRangeContext(
+      prisma,
+      shopId,
+      new Date(`${date}T00:00:00.000Z`),
+      new Date(`${nextDate}T00:00:00.000Z`),
+      staffIds,
+    ),
     prisma.booking.findMany({
-      where: { tenantId, shopId, deletedAt: null, status: { in: ['CONFIRMED', 'COMPLETED', 'PENDING'] }, startAt: { gte: dayStart, lt: dayEnd } },
+      where: {
+        tenantId,
+        shopId,
+        deletedAt: null,
+        status: { in: ['CONFIRMED', 'COMPLETED', 'PENDING'] },
+        startAt: { gte: dayStart, lt: dayEnd },
+        ...(selectedStaffId ? { staffId: selectedStaffId } : {}),
+      },
       orderBy: { startAt: 'asc' },
       select: { id: true, staffId: true, startAt: true, endAt: true, customerName: true, status: true, service: { select: { name: true } } },
     }),
   ]);
+
+  const { dayStatus, openSpans, shiftsByStaff } = resolveDayShifts({
+    date,
+    timezone,
+    staffIds,
+    ctx,
+    closeOnNationalHolidays: shop?.closeOnNationalHolidays ?? true,
+  });
 
   const enriched = bookings.map((b) => {
     const startMin = utcToZonedDateMinutes(b.startAt, timezone).minutes;
@@ -548,14 +741,24 @@ export async function getDaySchedule(
     };
   });
 
-  // タイムライン範囲: 営業時間 + 予約を内包し、時単位に丸める
-  let openMin = bh.length ? Math.min(...bh.map((r) => r.openMinute)) : Number.POSITIVE_INFINITY;
-  let closeMin = bh.length ? Math.max(...bh.map((r) => r.closeMinute)) : Number.NEGATIVE_INFINITY;
+  // タイムライン範囲: 営業時間 + シフト + 予約を内包し、時単位に丸める
+  let openMin = Number.POSITIVE_INFINITY;
+  let closeMin = Number.NEGATIVE_INFINITY;
+  for (const o of openSpans) {
+    openMin = Math.min(openMin, o.startMin);
+    closeMin = Math.max(closeMin, o.endMin);
+  }
+  for (const arr of shiftsByStaff.values()) {
+    for (const sh of arr) {
+      openMin = Math.min(openMin, sh.startMin);
+      closeMin = Math.max(closeMin, sh.endMin);
+    }
+  }
   for (const e of enriched) {
     openMin = Math.min(openMin, e.block.startMin);
     closeMin = Math.max(closeMin, e.block.endMin);
   }
-  const isClosed = bh.length === 0 && enriched.length === 0;
+  const isClosed = openSpans.length === 0 && enriched.length === 0;
   if (!Number.isFinite(openMin) || !Number.isFinite(closeMin)) {
     openMin = 600;
     closeMin = 1140;
@@ -564,13 +767,30 @@ export async function getDaySchedule(
   closeMin = Math.ceil(closeMin / 60) * 60;
   if (closeMin <= openMin) closeMin = openMin + 60;
 
-  const lanes = staff.map((s) => ({
+  const lanes: DayScheduleLane[] = selected.map((s) => ({
     key: s.id,
     name: s.displayName ?? s.name,
+    shifts: shiftsByStaff.get(s.id) ?? [],
     bookings: enriched.filter((e) => e.staffId === s.id).map((e) => e.block),
   }));
+
+  // 退職・停止済みスタッフの予約を拾う（稼働一覧に居ないので上のループでは漏れる）
+  const activeIds = new Set(staffIds);
+  const orphanIds = [...new Set(enriched.map((e) => e.staffId).filter((id): id is string => !!id && !activeIds.has(id)))];
+  for (const st of await loadInactiveStaffFor(tenantId, shopId, orphanIds)) {
+    lanes.push({
+      key: st.id,
+      name: st.name,
+      shifts: [],
+      bookings: enriched.filter((e) => e.staffId === st.id).map((e) => e.block),
+      inactive: true,
+    });
+  }
+
   const unassigned = enriched.filter((e) => !e.staffId).map((e) => e.block);
-  if (unassigned.length > 0) lanes.push({ key: '__none__', name: '未割当', bookings: unassigned });
+  if (unassigned.length > 0) lanes.push({ key: '__none__', name: '未割当', shifts: [], bookings: unassigned });
+
+  const holiday = jpHolidayName(date);
 
   return {
     date,
@@ -578,10 +798,134 @@ export async function getDaySchedule(
     openMin,
     closeMin,
     isClosed,
+    closedLabel: openSpans.length === 0 ? (DAY_STATUS_LABEL[dayStatus] ?? '休業') : null,
+    holidayName: holiday,
     prevDate: isoDateAddDays(date, -1),
-    nextDate: isoDateAddDays(date, 1),
+    nextDate,
     today: todayInZone(timezone),
     lanes,
+    staffOptions: options,
+    selectedStaffId,
+  };
+}
+
+/** 週の起点（月曜）へ丸める。日本のシフト表は月曜始まりが一般的。 */
+function weekStart(date: string): string {
+  const dow = isoDateDayOfWeek(date); // 0=日
+  return isoDateAddDays(date, dow === 0 ? -6 : 1 - dow);
+}
+
+/**
+ * 週間シフト表（縦: スタッフ / 横: 7日）。
+ * 店主が紙で作っている表をそのまま置き換えるための形。
+ */
+export async function getWeekSchedule(
+  tenantId: string,
+  shopId: string,
+  timezone: string,
+  date: string,
+  staffId?: string | null,
+): Promise<WeekSchedule> {
+  const from = weekStart(date);
+  const dates = Array.from({ length: 7 }, (_, i) => isoDateAddDays(from, i));
+  const endExclusive = isoDateAddDays(from, 7);
+
+  const { options, selected, selectedStaffId } = await loadBoardStaff(tenantId, shopId, staffId);
+  const staffIds = selected.map((s) => s.id);
+
+  const [shop, ctx, bookings] = await Promise.all([
+    prisma.shop.findFirst({ where: { id: shopId, tenantId }, select: { closeOnNationalHolidays: true } }),
+    loadRangeContext(
+      prisma,
+      shopId,
+      new Date(`${from}T00:00:00.000Z`),
+      new Date(`${endExclusive}T00:00:00.000Z`),
+      staffIds,
+    ),
+    prisma.booking.findMany({
+      where: {
+        tenantId,
+        shopId,
+        deletedAt: null,
+        status: { in: ['CONFIRMED', 'COMPLETED', 'PENDING'] },
+        startAt: {
+          gte: zonedDateMinutesToUtc(from, 0, timezone),
+          lt: zonedDateMinutesToUtc(endExclusive, 0, timezone),
+        },
+        ...(selectedStaffId ? { staffId: selectedStaffId } : {}),
+      },
+      select: { staffId: true, startAt: true },
+    }),
+  ]);
+
+  const closeOnNationalHolidays = shop?.closeOnNationalHolidays ?? true;
+
+  // 予約件数を (staffId, 暦日) で集計
+  const counts = new Map<string, number>();
+  for (const b of bookings) {
+    if (!b.staffId) continue;
+    const d = zonedDateString(b.startAt, timezone);
+    const k = `${b.staffId}|${d}`;
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+
+  const perDate = dates.map((d) => ({
+    date: d,
+    ...resolveDayShifts({ date: d, timezone, staffIds, ctx, closeOnNationalHolidays }),
+  }));
+
+  const today = todayInZone(timezone);
+  const columns: WeekScheduleColumn[] = perDate.map((pd) => {
+    const [y, m, dd] = pd.date.split('-').map(Number);
+    return {
+      date: pd.date,
+      month: m!,
+      day: dd!,
+      dow: isoDateDayOfWeek(pd.date),
+      isClosed: pd.openSpans.length === 0,
+      closedLabel: pd.openSpans.length === 0 ? (DAY_STATUS_LABEL[pd.dayStatus] ?? '休業') : null,
+      holidayName: jpHolidayName(pd.date),
+      isToday: pd.date === today,
+    };
+  });
+
+  const rows: WeekSchedule['rows'] = selected.map((s) => ({
+    staffId: s.id,
+    name: s.displayName ?? s.name,
+    days: perDate.map((pd) => ({
+      date: pd.date,
+      shifts: pd.shiftsByStaff.get(s.id) ?? [],
+      bookingCount: counts.get(`${s.id}|${pd.date}`) ?? 0,
+    })),
+  }));
+
+  // 退職・停止済みスタッフに予約が残っていれば行として出す（黙って0件にしない）
+  const activeIds = new Set(staffIds);
+  const orphanIds = [...new Set(bookings.map((b) => b.staffId).filter((id): id is string => !!id && !activeIds.has(id)))];
+  for (const st of await loadInactiveStaffFor(tenantId, shopId, orphanIds)) {
+    rows.push({
+      staffId: st.id,
+      name: st.name,
+      inactive: true,
+      days: perDate.map((pd) => ({
+        date: pd.date,
+        shifts: [],
+        bookingCount: counts.get(`${st.id}|${pd.date}`) ?? 0,
+      })),
+    });
+  }
+
+  return {
+    from,
+    to: dates[6]!,
+    timezone,
+    prevDate: isoDateAddDays(from, -7),
+    nextDate: isoDateAddDays(from, 7),
+    today,
+    columns,
+    rows,
+    staffOptions: options,
+    selectedStaffId,
   };
 }
 

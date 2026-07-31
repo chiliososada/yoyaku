@@ -29,7 +29,19 @@ export default async function StaffSchedulePage({ params }: { params: { id: stri
         <Link href={`/admin/staff/${params.id}`} className="mb-4 inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
           <ChevronLeft className="size-4" /> スタッフ編集へ
         </Link>
-        <PageHeader title="シフト設定" description={`${data.staff.displayName ?? data.staff.name} の勤務シフト`} />
+        <PageHeader
+          title="シフト設定"
+          description={`${data.staff.displayName ?? data.staff.name} の勤務シフト`}
+          action={
+            /* ここは「曜日のルール」。実際に何日出勤になるかは合成結果を見ないと分からない。 */
+            <Link
+              href={`/admin/schedule?view=week&staff=${params.id}`}
+              className="rounded-md border px-3 py-2 text-sm hover:bg-slate-50"
+            >
+              週間の予定で確認
+            </Link>
+          }
+        />
       </div>
 
       <Panel title="曜日シフト（定常）">

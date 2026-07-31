@@ -102,11 +102,16 @@ export function jpHolidaysForYear(year: number): JpHoliday[] {
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
 
+/** 指定日（YYYY-MM-DD）の祝日名。祝日でなければ null。 */
+export function jpHolidayName(date: string): string | null {
+  const year = Number(date.slice(0, 4));
+  if (!Number.isFinite(year)) return null;
+  return jpHolidaysForYear(year).find((h) => h.date === date)?.name ?? null;
+}
+
 /** 指定日（YYYY-MM-DD）が祝日か。 */
 export function isJpHoliday(date: string): boolean {
-  const year = Number(date.slice(0, 4));
-  if (!Number.isFinite(year)) return false;
-  return jpHolidaysForYear(year).some((h) => h.date === date);
+  return jpHolidayName(date) !== null;
 }
 
 /** [from, to)（YYYY-MM-DD）の祝日を日付昇順で返す。年をまたいでもよい。 */

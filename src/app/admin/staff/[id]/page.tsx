@@ -35,6 +35,13 @@ export default async function EditStaffPage({ params }: { params: { id: string }
         description={staff.name}
         action={
           <div className="flex items-center gap-2">
+            {/* シフト「設定」と、その結果である実際の予定は別物。両方に行けるようにする。 */}
+            <Link
+              href={`/admin/schedule?view=week&staff=${staff.id}`}
+              className="rounded-md border px-3 py-2 text-sm hover:bg-slate-50"
+            >
+              週間の予定
+            </Link>
             <Link href={`/admin/staff/${staff.id}/schedule`} className="rounded-md border px-3 py-2 text-sm hover:bg-slate-50">
               シフト設定
             </Link>
