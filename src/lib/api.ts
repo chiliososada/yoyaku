@@ -6,6 +6,7 @@
 import { NextResponse } from 'next/server';
 import { ZodError } from 'zod';
 import { AppError, isAppError, Errors } from './errors';
+import { zodUserMessage } from './zod-message';
 import { captureException } from './monitoring';
 
 export function jsonOk<T>(data: T, init?: ResponseInit) {
@@ -25,7 +26,9 @@ export function route<Args extends unknown[]>(
       return await handler(...args);
     } catch (e) {
       if (e instanceof ZodError) {
-        const appErr = Errors.validation('入力内容を確認してください。', e.flatten());
+        // スキーマ側の具体的な文言をそのまま返す（潰すと利用者が何を直せばよいか分からない）。
+        // details には従来どおり項目別の内訳も載せる。
+        const appErr = Errors.validation(zodUserMessage(e), e.flatten());
         return jsonError(appErr);
       }
       if (isAppError(e)) {
