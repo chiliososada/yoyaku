@@ -9,6 +9,7 @@ import { serviceFormSchema, type ServiceFormInput } from '@/lib/validation/admin
 import { createServiceAction, updateServiceAction } from '@/server/actions/admin-actions';
 import Link from 'next/link';
 import { Input } from '@/components/ui/input';
+import { ColorPicker } from '@/components/ui/color-picker';
 import { Button } from '@/components/ui/button';
 import { Field, Select, TextArea, CheckboxRow, CheckboxGroup, FormError, SubmitBar } from './form-kit';
 
@@ -95,8 +96,23 @@ export function ServiceForm({
         <Field label="カテゴリ" error={errors.category?.message}>
           <Input {...register('category')} placeholder="ヘア" />
         </Field>
-        <Field label="表示色" error={errors.color?.message} hint="#2563eb など">
-          <Input {...register('color')} placeholder="#2563eb" />
+        <Field
+          label="表示色"
+          error={errors.color?.message}
+          hint="予約画面のメニュー帯と、管理画面の一覧に使われます。"
+        >
+          <Controller
+            control={control}
+            name="color"
+            render={({ field }) => (
+              <ColorPicker
+                value={field.value ?? ''}
+                onChange={field.onChange}
+                fallback="#2563eb"
+                clearLabel="色なし"
+              />
+            )}
+          />
         </Field>
       </div>
       <Field label="説明" error={errors.description?.message}>

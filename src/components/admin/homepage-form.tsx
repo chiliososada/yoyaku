@@ -15,6 +15,7 @@ import { updateHomepageAction } from '@/server/actions/admin-actions';
 import { useImageDrop, screenImageFiles } from './use-image-drop';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
+import { ColorPicker } from '@/components/ui/color-picker';
 import { Field, Select, TextArea, CheckboxRow, FormError, SubmitBar } from './form-kit';
 
 const DEFAULT_BRAND = '#4f46e5';
@@ -170,30 +171,11 @@ export function HomepageForm({
           <Input {...register('accessNote')} placeholder="◯◯駅 徒歩3分／提携駐車場あり" />
         </Field>
         <Field label="テーマカラー" error={errors.themeColor?.message} hint="ボタンや見出しの色。未指定はブランド標準色。">
-          <div className="flex items-center gap-3">
-            <input
-              type="color"
-              value={themeColor || DEFAULT_BRAND}
-              onChange={(e) => setValue('themeColor', e.target.value, { shouldDirty: true })}
-              className="size-10 cursor-pointer rounded border"
-              aria-label="テーマカラー"
-            />
-            <Input
-              value={themeColor}
-              onChange={(e) => setValue('themeColor', e.target.value, { shouldDirty: true })}
-              placeholder={DEFAULT_BRAND}
-              className="w-32 font-mono"
-            />
-            {themeColor && (
-              <button
-                type="button"
-                onClick={() => setValue('themeColor', '', { shouldDirty: true })}
-                className="text-xs text-muted-foreground hover:underline"
-              >
-                標準に戻す
-              </button>
-            )}
-          </div>
+          <ColorPicker
+            value={themeColor ?? ''}
+            onChange={(v) => setValue('themeColor', v, { shouldDirty: true })}
+            fallback={DEFAULT_BRAND}
+          />
         </Field>
       </fieldset>
 

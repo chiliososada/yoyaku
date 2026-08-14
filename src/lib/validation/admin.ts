@@ -54,7 +54,17 @@ export const serviceFormSchema = z
     capacity: z.coerce.number().int().min(1).max(100).default(1),
     requiresStaff: z.boolean().default(true),
     slotIntervalMin: z.coerce.number().int().min(5).max(240).default(15),
-    color: optionalString,
+    /**
+     * 表示色。以前は自由文字列だったため、書き間違いがそのまま保存され、
+     * 一覧の色ドットや予約画面の帯が無言で表示されなくなっていた（原因は画面に出ない）。
+     * 見本から選べるようになったので、形式を固定して入口で弾く。
+     */
+    color: z
+      .string()
+      .trim()
+      .regex(/^#[0-9a-fA-F]{6}$/, '色は #RRGGBB の形式で指定してください（見本から選べます）。')
+      .optional()
+      .or(z.literal('')),
     isActive: z.boolean().default(true),
     sortOrder: z.coerce.number().int().min(0).default(0),
     staffIds: z.array(z.string()).default([]),
