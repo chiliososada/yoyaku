@@ -25,7 +25,7 @@ export default function ResetPasswordPage({ searchParams }: { searchParams: { to
         <Card className="border-0 shadow-xl shadow-slate-200/60">
           <CardHeader>
             <CardTitle>新しいパスワード</CardTitle>
-            <CardDescription>新しいパスワードを入力してください（8文字以上）。</CardDescription>
+            <CardDescription>新しいパスワードを入力してください。</CardDescription>
           </CardHeader>
           <CardContent>
             <ResetPasswordForm token={token} />

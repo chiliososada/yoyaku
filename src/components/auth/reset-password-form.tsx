@@ -6,6 +6,8 @@ import { useRouter } from 'next/navigation';
 import { Loader2, CheckCircle2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/password-input';
+import { checkPassword, PASSWORD_MIN, PASSWORD_RULE_TEXT } from '@/lib/validation/password';
 import { Label } from '@/components/ui/label';
 import { resetPasswordAction } from '@/server/actions/auth-actions';
 
@@ -44,6 +46,8 @@ export function ResetPasswordForm({ token }: { token: string | null }) {
     );
   }
 
+  const pw = checkPassword(password);
+
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (password !== confirm) {
@@ -70,25 +74,35 @@ export function ResetPasswordForm({ token }: { token: string | null }) {
       )}
       <div className="grid gap-1.5">
         <Label htmlFor="password">新しいパスワード</Label>
-        <Input
+        <PasswordInput
           id="password"
-          type="password"
+          
           autoComplete="new-password"
           required
-          minLength={8}
+          minLength={PASSWORD_MIN}
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          placeholder="8文字以上"
         />
+        {/* 条件は登録時と同一（validation/password.ts）。片方だけ古いと直せない指摘になる。 */}
+        {password.length === 0 ? (
+          <p className="text-xs text-muted-foreground">{PASSWORD_RULE_TEXT}</p>
+        ) : (
+          <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs">
+            <Req ok={pw.lengthOk} label={`${PASSWORD_MIN}文字以上`} />
+            <Req ok={pw.upperOk} label="大文字" />
+            <Req ok={pw.lowerOk} label="小文字" />
+            <Req ok={pw.digitOk} label="数字" />
+          </div>
+        )}
       </div>
       <div className="grid gap-1.5">
         <Label htmlFor="confirm">新しいパスワード（確認）</Label>
-        <Input
+        <PasswordInput
           id="confirm"
-          type="password"
+          
           autoComplete="new-password"
           required
-          minLength={8}
+          minLength={PASSWORD_MIN}
           value={confirm}
           onChange={(e) => setConfirm(e.target.value)}
         />
@@ -97,5 +111,14 @@ export function ResetPasswordForm({ token }: { token: string | null }) {
         {loading ? <Loader2 className="size-4 animate-spin" /> : 'パスワードを変更'}
       </Button>
     </form>
+  );
+}
+
+/** パスワード条件の1項目。 */
+function Req({ ok, label }: { ok: boolean; label: string }) {
+  return (
+    <span className={ok ? 'font-medium text-success' : 'text-muted-foreground'}>
+      {ok ? '✓' : '・'} {label}
+    </span>
   );
 }

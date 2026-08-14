@@ -2,6 +2,7 @@
  * 管理画面の書込 Zod スキーマ。client(RHF) と server action の双方で使用。
  */
 import { z } from 'zod';
+import { passwordSchema } from './password';
 import { isReservedSlug } from '@/lib/shop-slug';
 
 const optionalString = z.string().trim().max(200).optional().or(z.literal(''));
@@ -114,7 +115,7 @@ export type ServiceFormInput = z.infer<typeof serviceFormSchema>;
 // ---- スタッフのログインアカウント ----
 export const staffLoginSchema = z.object({
   email: z.string().trim().email('メール形式が不正です。'),
-  password: z.string().min(8, 'パスワードは8文字以上で入力してください。').max(100),
+  password: passwordSchema,
 });
 export type StaffLoginInput = z.infer<typeof staffLoginSchema>;
 

@@ -2,26 +2,29 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { Loader2, MailCheck } from 'lucide-react';
+import { CheckCircle2, FileText, Loader2, MailCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/password-input';
 import { Label } from '@/components/ui/label';
 import { requestSignupAction } from '@/server/actions/signup-actions';
 import { signupRequestSchema } from '@/lib/validation/signup';
+import { checkPassword, PASSWORD_MIN, PASSWORD_RULE_TEXT } from '@/lib/validation/password';
+import { LegalConsentDialog } from '@/components/auth/legal-consent';
 
 const EMPTY = { tenantName: '', shopName: '', ownerName: '', email: '', password: '' };
 
 export function SignupForm() {
   const [form, setForm] = useState(EMPTY);
   const [agreed, setAgreed] = useState(false);
+  const [legalOpen, setLegalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** 項目別のエラー。送信前に出す（サーバーまで往復させて全体エラーにしない）。 */
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
-  const hasAlnum = /[a-zA-Z]/.test(form.password) && /[0-9]/.test(form.password);
-  const pwOk = form.password.length >= 10 && hasAlnum;
+  const pw = checkPassword(form.password);
 
   const set = (k: keyof typeof EMPTY) => (e: React.ChangeEvent<HTMLInputElement>) => {
     setForm((f) => ({ ...f, [k]: e.target.value }));
@@ -107,34 +110,58 @@ export function SignupForm() {
       <Field
         id="password"
         label="パスワード"
-        error={fieldErrors.password}
-        hint="10文字以上、英字と数字を含めてください。"
+        hint={form.password.length === 0 && !fieldErrors.password ? PASSWORD_RULE_TEXT : undefined}
       >
-        <Input id="password" type="password" required autoComplete="new-password" value={form.password} onChange={set('password')} />
-        {/* 入力中に条件を満たしたか分かるようにする（送信して初めて弾かれるのを避ける） */}
-        {form.password.length > 0 && !fieldErrors.password && (
-          <p className={pwOk ? 'text-xs font-medium text-success' : 'text-xs text-muted-foreground'}>
-            {pwOk ? '✓ 条件を満たしています' : `あと${Math.max(0, 10 - form.password.length)}文字以上` + (hasAlnum ? '' : '／英字と数字が必要です')}
-          </p>
+        <PasswordInput id="password" required autoComplete="new-password" value={form.password} onChange={set('password')} />
+        {/*
+          条件は個別のチップで示す。ここに加えて「パスワードは6文字以上にしてください。」という
+          文も出すと、同じことを2行で言うことになる。未達の項目を赤にするだけで足りる。
+        */}
+        {(form.password.length > 0 || fieldErrors.password) && (
+          <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs">
+            <Req ok={pw.lengthOk} label={`${PASSWORD_MIN}文字以上`} failed={!!fieldErrors.password} />
+            <Req ok={pw.upperOk} label="大文字" failed={!!fieldErrors.password} />
+            <Req ok={pw.lowerOk} label="小文字" failed={!!fieldErrors.password} />
+            <Req ok={pw.digitOk} label="数字" failed={!!fieldErrors.password} />
+          </div>
         )}
       </Field>
-      <label className="flex items-start gap-2 text-xs text-muted-foreground">
-        <input
-          type="checkbox"
-          className="mt-0.5 size-4 shrink-0 accent-[hsl(var(--primary))]"
-          checked={agreed}
-          onChange={(e) => setAgreed(e.target.checked)}
-        />
-        <span>
-          <Link href="/legal/terms" target="_blank" className="text-primary hover:underline">利用規約</Link>
-          {' と '}
-          <Link href="/legal/privacy" target="_blank" className="text-primary hover:underline">プライバシーポリシー</Link>
-          {' に同意します。'}
-        </span>
-      </label>
+      {/* 規約は別タブへ飛ばさずその場で読ませる。読了までボタンを押せない（同意の実質を伴わせる）。 */}
+      <div className="rounded-lg border bg-muted/30 p-3">
+        {agreed ? (
+          <div className="flex items-center justify-between gap-2">
+            <span className="flex items-center gap-1.5 text-sm font-medium text-success">
+              <CheckCircle2 className="size-4" /> 利用規約・プライバシーポリシーに同意済み
+            </span>
+            <button
+              type="button"
+              onClick={() => setLegalOpen(true)}
+              className="shrink-0 text-xs text-primary hover:underline"
+            >
+              もう一度読む
+            </button>
+          </div>
+        ) : (
+          <>
+            <p className="mb-2 text-xs text-muted-foreground">
+              お申し込みには
+              <Link href="/legal/terms" target="_blank" className="mx-0.5 text-primary hover:underline">利用規約</Link>
+              と
+              <Link href="/legal/privacy" target="_blank" className="mx-0.5 text-primary hover:underline">プライバシーポリシー</Link>
+              への同意が必要です。
+            </p>
+            <Button type="button" variant="outline" onClick={() => setLegalOpen(true)} className="w-full">
+              <FileText className="size-4" /> 内容を読んで同意する
+            </Button>
+          </>
+        )}
+      </div>
+
       {fieldErrors.agreed && (
         <p className="text-xs font-medium text-destructive">{fieldErrors.agreed}</p>
       )}
+      <LegalConsentDialog open={legalOpen} onClose={() => setLegalOpen(false)} onAgree={() => setAgreed(true)} />
+
       <Button type="submit" disabled={loading || !agreed} className="w-full">
         {loading && <Loader2 className="mr-2 size-4 animate-spin" />}
         30日間 無料ではじめる
@@ -173,5 +200,21 @@ function Field({
         hint && <p className="text-xs text-muted-foreground">{hint}</p>
       )}
     </div>
+  );
+}
+
+/**
+ * パスワード条件の1項目。満たすと緑。
+ * 送信を試みて弾かれた後だけ、未達の項目を赤くする（入力途中から赤いと急かして見える）。
+ */
+function Req({ ok, label, failed }: { ok: boolean; label: string; failed?: boolean }) {
+  return (
+    <span
+      className={
+        ok ? 'font-medium text-success' : failed ? 'font-medium text-destructive' : 'text-muted-foreground'
+      }
+    >
+      {ok ? '✓' : '・'} {label}
+    </span>
   );
 }

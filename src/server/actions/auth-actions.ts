@@ -1,6 +1,7 @@
 'use server';
 
 import { z } from 'zod';
+import { passwordSchema } from '@/lib/validation/password';
 import { Errors } from '@/lib/errors';
 import { requestPasswordReset, resetPasswordWithToken } from '@/server/services/password-service';
 import { runAction, type ActionResult } from './action-utils';
@@ -8,7 +9,7 @@ import { runAction, type ActionResult } from './action-utils';
 const emailSchema = z.object({ email: z.string().trim().email('メールアドレスの形式が正しくありません。') });
 const resetSchema = z.object({
   token: z.string().min(1),
-  password: z.string().min(8, 'パスワードは8文字以上で入力してください。').max(100),
+  password: passwordSchema,
 });
 
 /**

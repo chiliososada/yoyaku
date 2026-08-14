@@ -7,6 +7,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { CheckCircle2 } from 'lucide-react';
 import { createTenantSchema, type CreateTenantInput } from '@/lib/validation/platform';
+import { PASSWORD_RULE_TEXT } from '@/lib/validation/password';
 import { createTenantAction } from '@/server/actions/platform-actions';
 import { Input } from '@/components/ui/input';
 import { Field, Select, FormError, SubmitBar } from './form-kit';
@@ -101,7 +102,7 @@ export function CreateTenantForm({ plans }: { plans: { code: string; name: strin
           <Input type="email" {...register('ownerEmail')} placeholder="owner@sample.co" />
         </Field>
       </div>
-      <Field label="初期パスワード" required error={errors.ownerPassword?.message} hint="8文字以上。オーナーへ安全に共有してください。">
+      <Field label="初期パスワード" required error={errors.ownerPassword?.message} hint={`${PASSWORD_RULE_TEXT} オーナーへ安全に共有してください。`}>
         <Input type="text" {...register('ownerPassword')} />
       </Field>
       <SubmitBar submitting={isSubmitting} submitLabel="商家を作成" onCancel={() => router.push('/platform/tenants')} />

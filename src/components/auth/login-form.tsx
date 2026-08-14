@@ -7,6 +7,7 @@ import { signIn } from 'next-auth/react';
 import { Loader2, MailCheck, ShieldCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/password-input';
 import { Label } from '@/components/ui/label';
 
 export function LoginForm() {
@@ -95,9 +96,9 @@ export function LoginForm() {
           </div>
           <div className="grid gap-1.5">
             <Label htmlFor="password">パスワード</Label>
-            <Input
+            <PasswordInput
               id="password"
-              type="password"
+              
               autoComplete="current-password"
               required
               value={password}

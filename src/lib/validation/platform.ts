@@ -2,6 +2,7 @@
  * プラットフォーム後台の書込 Zod スキーマ。
  */
 import { z } from 'zod';
+import { passwordSchema } from './password';
 import { isReservedSlug } from '@/lib/shop-slug';
 
 const slug = z
@@ -19,7 +20,7 @@ export const createTenantSchema = z.object({
   shopSlug: slug,
   ownerName: z.string().trim().min(1, 'オーナー名を入力してください。').max(100),
   ownerEmail: z.string().trim().email('メール形式が不正です。'),
-  ownerPassword: z.string().min(8, 'パスワードは8文字以上。').max(100),
+  ownerPassword: passwordSchema,
   planCode: z.string().optional(),
 });
 export type CreateTenantInput = z.infer<typeof createTenantSchema>;

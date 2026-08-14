@@ -1,10 +1,12 @@
 'use client';
+import { checkPassword, PASSWORD_RULE_TEXT } from '@/lib/validation/password';
 
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { Loader2, KeyRound, ShieldOff, CheckCircle2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/password-input';
 import { setStaffLoginAction, disableStaffLoginAction } from '@/server/actions/admin-actions';
 
 type Login = { email: string; active: boolean } | null;
@@ -30,8 +32,8 @@ export function StaffLoginForm({
   const submit = () => {
     setError(null);
     setDone(null);
-    if (password.length < 8) {
-      setError('パスワードは8文字以上で入力してください。');
+    if (!checkPassword(password).ok) {
+      setError(PASSWORD_RULE_TEXT);
       return;
     }
     start(async () => {
@@ -98,9 +100,9 @@ export function StaffLoginForm({
           />
         </label>
         <label className="grid gap-1 text-sm">
-          <span className="text-muted-foreground">{login ? '新しいパスワード' : 'パスワード'}（8文字以上）</span>
-          <Input
-            type="password"
+          <span className="text-muted-foreground">{login ? '新しいパスワード' : 'パスワード'}</span>
+          <PasswordInput
+            
             autoComplete="new-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
