@@ -129,47 +129,53 @@ export function ShopSettingsForm({ shopId, initial }: { shopId: string; initial:
           <Input type="email" {...register('email')} />
         </Field>
       </div>
-      <div className="grid gap-4 sm:grid-cols-4">
-        <Field
-          label="郵便番号"
-          error={errors.postalCode?.message}
-          hint="ハイフンなしで入力（例: 1500002）"
-        >
-          <div className="flex items-center gap-1.5">
-            <Input
-              {...register('postalCode', {
-                // 7桁そろった時点で自動で引く（入力途中では動かない）。
-                onChange: (e: React.ChangeEvent<HTMLInputElement>) => void applyPostal(e.target.value),
-              })}
-              placeholder="1500002"
-              inputMode="numeric"
-              autoComplete="postal-code"
-            />
-            {/*
-              ボタンを必ず置く。自動実行は「値が変わったとき」しか動かないため、
-              保存済みの郵便番号を開き直した場合は何も起きず、
-              店主からは「入っているのに出ない」＝壊れているように見える。
-            */}
-            <button
-              type="button"
-              onClick={() => void applyPostal(getValues('postalCode') ?? '', true)}
-              disabled={lookup.busy}
-              title="郵便番号から住所を入力"
-              className="inline-flex h-10 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border bg-white px-2.5 text-xs font-medium hover:bg-slate-50 disabled:opacity-50"
-            >
-              {lookup.busy ? <Loader2 className="size-3.5 animate-spin" /> : <MapPin className="size-3.5" />}
-              住所入力
-            </button>
-          </div>
-        </Field>
+      {/* 郵便番号は入力欄＋ボタンを横に並べるため独立した行にする。
+          4分割の中に押し込むと、入力欄が7桁を表示しきれない幅になっていた。 */}
+      <Field
+        label="郵便番号"
+        error={errors.postalCode?.message}
+        hint="ハイフンなしで入力（例: 1500002）"
+      >
+        <div className="flex items-center gap-2">
+          <Input
+            {...register('postalCode', {
+              // 7桁そろった時点で自動で引く（入力途中では動かない）。
+              onChange: (e: React.ChangeEvent<HTMLInputElement>) => void applyPostal(e.target.value),
+            })}
+            placeholder="1500002"
+            inputMode="numeric"
+            autoComplete="postal-code"
+            maxLength={8}
+            className="w-40 tabular-nums"
+          />
+          {/*
+            ボタンを必ず置く。自動実行は「値が変わったとき」しか動かないため、
+            保存済みの郵便番号を開き直した場合は何も起きず、
+            店主からは「入っているのに出ない」＝壊れているように見える。
+          */}
+          <button
+            type="button"
+            onClick={() => void applyPostal(getValues('postalCode') ?? '', true)}
+            disabled={lookup.busy}
+            title="郵便番号から住所を入力"
+            className="inline-flex h-10 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border bg-white px-3 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
+          >
+            {lookup.busy ? <Loader2 className="size-4 animate-spin" /> : <MapPin className="size-4" />}
+            住所入力
+          </button>
+        </div>
+      </Field>
+
+      {/* 番地は「1-2-3 ◯◯ビル4F」まで入るので他より広く取る */}
+      <div className="grid gap-4 sm:grid-cols-[1fr_1fr_1.4fr]">
         <Field label="都道府県" error={errors.prefecture?.message}>
           <Input {...register('prefecture')} placeholder="東京都" />
         </Field>
         <Field label="市区町村" error={errors.city?.message}>
-          <Input {...register('city')} placeholder="渋谷区" />
+          <Input {...register('city')} placeholder="港区" />
         </Field>
         <Field label="番地・建物" error={errors.address?.message}>
-          <Input {...register('address')} placeholder="1-2-3 ◯◯ビル4F" />
+          <Input {...register('address')} placeholder="新橋1-2-3 ◯◯ビル4F" />
         </Field>
       </div>
 

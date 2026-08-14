@@ -28,7 +28,9 @@ export function Field({
         })
       : children;
   return (
-    <div className="grid gap-1.5">
+    // content-start が無いと、同じ行に補足文の長い項目があるとき その列が引き伸ばされ、
+    // 内部の行に余白が配分されて**入力欄だけが下にずれる**（実測で24pxずれた）。
+    <div className="grid content-start gap-1.5">
       <label htmlFor={id} className="text-sm font-medium">
         {label}
         {required && <span className="ml-0.5 text-destructive">*</span>}
