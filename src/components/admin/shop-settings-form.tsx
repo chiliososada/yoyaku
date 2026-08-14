@@ -37,9 +37,17 @@ export function ShopSettingsForm({ shopId, initial }: { shopId: string; initial:
   /** 同じ番号を何度も引かない＋古い応答が後から上書きするのを防ぐ。 */
   const lastCode = useRef<string | null>(null);
 
-  const applyPostal = async (raw: string) => {
+  const applyPostal = async (raw: string, force = false) => {
     const code = normalizePostalCode(raw);
-    if (!code || code === lastCode.current) return;
+    if (!code) {
+      // ボタンから明示的に押されたときだけ、桁数不足を伝える
+      // （入力途中の毎打鍵で赤字を出さない）
+      if (force) setLookup({ busy: false, note: null, error: '郵便番号を7桁で入力してください。' });
+      return;
+    }
+    // 自動実行は「番号が変わったとき」だけ。ただしボタンは何度でも効く
+    // （保存済みの番号を開き直した場合、値が変わらないので自動では動かない）。
+    if (!force && code === lastCode.current) return;
     lastCode.current = code;
     setLookup({ busy: true, note: null, error: null });
     try {
@@ -122,20 +130,36 @@ export function ShopSettingsForm({ shopId, initial }: { shopId: string; initial:
         </Field>
       </div>
       <div className="grid gap-4 sm:grid-cols-4">
-        <Field label="郵便番号" error={errors.postalCode?.message}>
-          <div className="relative">
+        <Field
+          label="郵便番号"
+          error={errors.postalCode?.message}
+          hint="ハイフンなしで入力（例: 1500002）"
+        >
+          <div className="flex items-center gap-1.5">
             <Input
               {...register('postalCode', {
-                // 7桁そろった時点で引く。入力途中では動かない（打つたびに問い合わせない）。
+                // 7桁そろった時点で自動で引く（入力途中では動かない）。
                 onChange: (e: React.ChangeEvent<HTMLInputElement>) => void applyPostal(e.target.value),
               })}
-              placeholder="150-0002"
+              placeholder="1500002"
               inputMode="numeric"
               autoComplete="postal-code"
             />
-            {lookup.busy && (
-              <Loader2 className="absolute right-2.5 top-1/2 size-4 -translate-y-1/2 animate-spin text-muted-foreground" />
-            )}
+            {/*
+              ボタンを必ず置く。自動実行は「値が変わったとき」しか動かないため、
+              保存済みの郵便番号を開き直した場合は何も起きず、
+              店主からは「入っているのに出ない」＝壊れているように見える。
+            */}
+            <button
+              type="button"
+              onClick={() => void applyPostal(getValues('postalCode') ?? '', true)}
+              disabled={lookup.busy}
+              title="郵便番号から住所を入力"
+              className="inline-flex h-10 shrink-0 items-center gap-1 whitespace-nowrap rounded-md border bg-white px-2.5 text-xs font-medium hover:bg-slate-50 disabled:opacity-50"
+            >
+              {lookup.busy ? <Loader2 className="size-3.5 animate-spin" /> : <MapPin className="size-3.5" />}
+              住所入力
+            </button>
           </div>
         </Field>
         <Field label="都道府県" error={errors.prefecture?.message}>
