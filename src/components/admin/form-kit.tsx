@@ -10,18 +10,26 @@ export function Field({
   required,
   error,
   hint,
+  htmlFor,
   children,
 }: {
   label: string;
   required?: boolean;
   error?: string;
   hint?: string;
+  /**
+   * 入力欄をボタン等と横並びにするため <div> で包むと、自動付与の id が
+   * その <div> に付いてしまい、ラベルを押しても入力欄に入らなくなる。
+   * そういう場合は入力欄に自分で id を振り、ここに同じ値を渡す。
+   */
+  htmlFor?: string;
   children: React.ReactNode;
 }) {
-  const id = useId();
+  const autoId = useId();
+  const id = htmlFor ?? autoId;
   // 単一の入力要素には id を付与し、label と紐付ける（アクセシビリティ）。
   const control =
-    isValidElement(children) && !(children.props as { id?: string }).id
+    !htmlFor && isValidElement(children) && !(children.props as { id?: string }).id
       ? cloneElement(children as React.ReactElement, {
           id,
           'aria-invalid': error ? true : undefined,

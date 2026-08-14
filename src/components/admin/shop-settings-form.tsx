@@ -133,11 +133,13 @@ export function ShopSettingsForm({ shopId, initial }: { shopId: string; initial:
           4分割の中に押し込むと、入力欄が7桁を表示しきれない幅になっていた。 */}
       <Field
         label="郵便番号"
+        htmlFor="postalCode"
         error={errors.postalCode?.message}
         hint="ハイフンなしで入力（例: 1500002）"
       >
         <div className="flex items-center gap-2">
           <Input
+            id="postalCode"
             {...register('postalCode', {
               // 7桁そろった時点で自動で引く（入力途中では動かない）。
               onChange: (e: React.ChangeEvent<HTMLInputElement>) => void applyPostal(e.target.value),
