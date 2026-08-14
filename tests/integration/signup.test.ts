@@ -13,6 +13,7 @@ import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { prisma } from '@/lib/db';
 import { requestSignup, verifySignup } from '@/server/services/signup-service';
+import { sendEmail } from '@/server/notifications/email';
 import { isAppError, type AppError } from '@/lib/errors';
 
 // メールは送らない（SMTP 未設定環境でも決定的に動かす）
@@ -196,5 +197,34 @@ describe('検証フェーズ（ここでテナント作成＝トライアル開�
     });
     await expect(verifySignup(token)).rejects.toThrow();
     await prisma.user.delete({ where: { id: other.id } });
+  });
+});
+
+describe('確認メールが送れなかったとき', () => {
+  it('申込を残さず、原因の分かる文言で返す（回数制限の枠を食わない）', async () => {
+    const mocked = vi.mocked(sendEmail);
+    const data = input();
+    mocked.mockRejectedValueOnce(new Error('SMTP is not configured'));
+
+    let msg = '';
+    try {
+      await requestSignup(data as never, '198.51.100.9');
+      throw new Error('expected to throw');
+    } catch (e) {
+      expect(isAppError(e)).toBe(true);
+      msg = (e as AppError).userMessage;
+    }
+    // 「時間をおいて再度お試しください」で終わらせない
+    expect(msg).toContain('確認メールを送信できませんでした');
+    expect(msg).not.toContain('処理に失敗しました');
+
+    // 送れていない申込は消す（残すと回数制限だけ消費して1時間ロックされる）
+    const left = await prisma.signupRequest.count({ where: { email: data.email } });
+    expect(left).toBe(0);
+
+    // 直後にもう一度出せる（＝枠を食っていない）
+    mocked.mockResolvedValueOnce(undefined as never);
+    await expect(requestSignup(data as never, '198.51.100.9')).resolves.toBeUndefined();
+    expect(await prisma.signupRequest.count({ where: { email: data.email } })).toBe(1);
   });
 });

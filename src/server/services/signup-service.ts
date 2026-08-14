@@ -97,7 +97,7 @@ export async function requestSignup(input: SignupRequestInput, ip: string | null
     await sendEmail({
       to: email,
       subject: '【Yoyaku】このメールアドレスは既に登録されています',
-      text: [
+        text: [
         `${input.ownerName} 様`,
         '',
         'Yoyaku へのお申し込みありがとうございます。',
@@ -107,44 +107,65 @@ export async function requestSignup(input: SignupRequestInput, ip: string | null
         `パスワードをお忘れの場合: ${env.APP_BASE_URL}/forgot-password`,
         '',
         'お心当たりがない場合は、このメールは破棄してください。',
-      ].join('\n'),
+        ].join('\n'),
     }).catch((e) => logger.warn({ err: String(e) }, '[signup] notice mail failed'));
     return;
   }
 
   const raw = crypto.randomBytes(32).toString('base64url');
-  await prisma.signupRequest.create({
+  const request = await prisma.signupRequest.create({
     data: {
-      email,
-      tokenHash: sha256(raw),
-      tenantName: input.tenantName.trim(),
-      shopName: input.shopName.trim(),
-      ownerName: input.ownerName.trim(),
-      // 平文パスワードは保存しない
-      passwordHash: bcrypt.hashSync(input.password, 10),
-      ipHash,
-      expiresAt: new Date(nowUtc().getTime() + VERIFY_TTL_MIN * 60_000),
+        email,
+        tokenHash: sha256(raw),
+        tenantName: input.tenantName.trim(),
+        shopName: input.shopName.trim(),
+        ownerName: input.ownerName.trim(),
+        // 平文パスワードは保存しない
+        passwordHash: bcrypt.hashSync(input.password, 10),
+        ipHash,
+        expiresAt: new Date(nowUtc().getTime() + VERIFY_TTL_MIN * 60_000),
     },
+    select: { id: true },
   });
 
   const link = `${env.APP_BASE_URL}/signup/verify?token=${raw}`;
-  await sendEmail({
-    to: email,
-    subject: '【Yoyaku】メールアドレスのご確認（30日間無料トライアル）',
-    text: [
-      `${input.ownerName} 様`,
-      '',
-      'Yoyaku へのお申し込みありがとうございます。',
-      `以下のリンクを ${VERIFY_TTL_MIN} 分以内に開いて、登録を完了してください。`,
-      '',
-      link,
-      '',
-      'リンクを開いた時点で 30 日間の無料トライアルが始まります（カード登録は不要です）。',
-      'お心当たりがない場合は、このメールを破棄してください。アカウントは作成されません。',
-      '',
-      '― Yoyaku / マイアークス株式会社',
-    ].join('\n'),
-  });
+  /**
+   * メール送信の失敗をそのまま投げると、呼び出し側では素の Error になり
+   * 「処理に失敗しました。時間をおいて再度お試しください。」しか出ない。
+   * しかも申込行は既に作られているので、
+   *   ①メールは届かない ②何が起きたか分からない ③再試行するたび回数制限を消費し
+   *   ④3回で1時間ロック
+   * となり、新規顧客が一番大事な最初の1回で完全に詰む。
+   * 送れなかった申込は残しても意味が無いので消し、原因が伝わる文言を返す。
+   */
+  try {
+    await sendEmail({
+      to: email,
+      subject: '【Yoyaku】メールアドレスのご確認（30日間無料トライアル）',
+      text: [
+        `${input.ownerName} 様`,
+        '',
+        'Yoyaku へのお申し込みありがとうございます。',
+        `以下のリンクを ${VERIFY_TTL_MIN} 分以内に開いて、登録を完了してください。`,
+        '',
+        link,
+        '',
+        'リンクを開いた時点で 30 日間の無料トライアルが始まります（カード登録は不要です）。',
+        'お心当たりがない場合は、このメールを破棄してください。アカウントは作成されません。',
+        '',
+        '― Yoyaku / マイアークス株式会社',
+      ].join('\n'),
+    });
+  } catch (e) {
+    // 未送信の申込は回数制限の枠だけ食うので取り消す（トークンも無効になる）
+    await prisma.signupRequest.delete({ where: { id: request.id } }).catch(() => undefined);
+    logger.error({ email, err: String(e) }, '[signup] verification mail FAILED');
+    throw Errors.conflict(
+      'CONFLICT',
+      '確認メールを送信できませんでした。メールアドレスをご確認のうえ、もう一度お試しください。' +
+        '繰り返し発生する場合はお手数ですが support@arcs-ai.com までご連絡ください。',
+    );
+  }
   logger.info({ email }, '[signup] verification mail sent');
 }
 
