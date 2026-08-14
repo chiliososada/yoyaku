@@ -30,7 +30,7 @@ async function main() {
 
   // ログイン実行
   await page.getByLabel('メールアドレス').fill(EMAIL);
-  await page.getByLabel('パスワード').fill(PASSWORD);
+  await page.getByLabel('パスワード', { exact: true }).fill(PASSWORD);
   await page.getByRole('button', { name: 'ログイン' }).click();
   await page.waitForURL('**/admin**', { timeout: 20_000 });
 

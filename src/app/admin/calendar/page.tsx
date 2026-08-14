@@ -29,7 +29,7 @@ export default async function CalendarPage() {
         <PageHeader title="休業・特別営業" description="特定日の臨時休業・特別営業を管理します" />
         <div className="mb-4">
           <Panel title="特別営業日を追加">
-            <SpecialDayForm shopId={shop.id} />
+            <SpecialDayForm shopId={shop.id} closeOnNationalHolidays={shopConfig.closeOnNationalHolidays} />
           </Panel>
         </div>
         {specialDays.length === 0 ? (

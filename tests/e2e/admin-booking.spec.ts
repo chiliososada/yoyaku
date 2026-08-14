@@ -14,7 +14,7 @@ test('オーナーがログインして代理予約を登録できる', async ({
   // ログイン
   await page.goto('/login');
   await page.getByLabel('メールアドレス').fill('owner@demo.test');
-  await page.getByLabel('パスワード').fill('password123');
+  await page.getByLabel('パスワード', { exact: true }).fill('password123');
   await page.getByRole('button', { name: 'ログイン' }).click();
   await page.waitForURL('**/admin', { timeout: 15000 });
 

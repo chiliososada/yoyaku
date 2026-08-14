@@ -2,18 +2,35 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { Plus } from 'lucide-react';
-import { specialDaySchema, type SpecialDayInput } from '@/lib/validation/admin';
-import { AlertTriangle } from 'lucide-react';
+import { Plus, AlertTriangle, Info } from 'lucide-react';
+import { type SpecialDayInput } from '@/lib/validation/admin';
 import { addSpecialDayAction } from '@/server/actions/admin-actions';
+import { jpHolidayName } from '@/lib/jp-holidays';
+import { SPECIAL_DAY_PRESETS, findPreset, type SpecialDayPresetValue } from '@/lib/special-day-presets';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Field, Select, FormError } from './form-kit';
 import { hhmmToMinutes } from '@/lib/time';
 
-export function SpecialDayForm({ shopId }: { shopId: string }) {
+/** フォームが扱う形。区分は「プリセット」で、保存時に type + 理由へ展開する。 */
+interface FormShape {
+  date: string;
+  preset: SpecialDayPresetValue;
+  reason: string;
+  open: string;
+  close: string;
+}
+
+export function SpecialDayForm({
+  shopId,
+  closeOnNationalHolidays,
+}: {
+  shopId: string;
+  /** 店舗設定の「祝日休業」。ONなら祝日は自動で休みなので、個別登録は不要と伝える。 */
+  closeOnNationalHolidays: boolean;
+}) {
   const router = useRouter();
   const [serverError, setServerError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -21,18 +38,42 @@ export function SpecialDayForm({ shopId }: { shopId: string }) {
     register,
     handleSubmit,
     watch,
+    setValue,
     reset,
     formState: { errors, isSubmitting },
-  } = useForm<SpecialDayInput>({
-    resolver: zodResolver(specialDaySchema),
-    defaultValues: { type: 'CLOSED', reason: '' },
+  } = useForm<FormShape>({
+    defaultValues: { preset: 'CLOSED', reason: '', date: '', open: '10:00', close: '18:00' },
   });
-  const type = watch('type');
 
-  const onSubmit = async (data: SpecialDayInput) => {
+  const presetValue = watch('preset');
+  const preset = findPreset(presetValue);
+  const date = watch('date');
+  const holidayName = date ? jpHolidayName(date) : null;
+
+  /** 区分を変えたら理由の既定値を入れ替える（自由入力した内容は消さない）。 */
+  const onPresetChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const next = findPreset(e.target.value);
+    const prev = findPreset(presetValue);
+    const current = watch('reason');
+    // 直前のプリセット既定値のまま（＝手入力していない）なら差し替える
+    if (current === '' || current === prev.defaultReason) {
+      setValue('reason', next.defaultReason);
+    }
+  };
+
+  const onSubmit = async (data: FormShape) => {
     setServerError(null);
     setNotice(null);
-    const res = await addSpecialDayAction(shopId, data);
+    const p = findPreset(data.preset);
+    const payload: SpecialDayInput = {
+      date: data.date,
+      type: p.type,
+      reason: data.reason,
+      ...(p.needsHours
+        ? { openMinute: hhmmToMinutes(data.open), closeMinute: hhmmToMinutes(data.close) }
+        : {}),
+    };
+    const res = await addSpecialDayAction(shopId, payload);
     if (!res.ok) {
       setServerError(res.error);
       return;
@@ -53,7 +94,7 @@ export function SpecialDayForm({ shopId }: { shopId: string }) {
           '「スタッフ」→ 対象スタッフの「シフト」から、この日の勤務時間を追加してください。',
       );
     }
-    reset({ type: 'CLOSED', reason: '', date: '' });
+    reset({ preset: 'CLOSED', reason: '', date: '', open: '10:00', close: '18:00' });
     router.refresh();
   };
 
@@ -67,28 +108,64 @@ export function SpecialDayForm({ shopId }: { shopId: string }) {
         </div>
       )}
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="日付" required error={errors.date?.message}>
+        <Field
+          label="日付"
+          required
+          error={errors.date?.message}
+          hint={holidayName ? `この日は「${holidayName}」です。` : undefined}
+        >
           <Input type="date" {...register('date')} />
         </Field>
-        <Field label="区分" error={errors.type?.message}>
-          <Select {...register('type')}>
-            <option value="CLOSED">臨時休業</option>
-            <option value="SPECIAL_OPEN">特別営業</option>
-            <option value="MODIFIED_HOURS">営業時間変更</option>
+        <Field label="区分">
+          <Select {...register('preset', { onChange: onPresetChange })}>
+            {SPECIAL_DAY_PRESETS.map((p) => (
+              <option key={p.value} value={p.value}>
+                {p.label}
+              </option>
+            ))}
           </Select>
         </Field>
       </div>
-      {type !== 'CLOSED' && (
+
+      {/* 区分ごとの補足。放っておくと「登録したのに効かない」「毎週分を手で足す」を招く。 */}
+      {presetValue === 'HOLIDAY' && closeOnNationalHolidays && (
+        <p className="flex items-start gap-2 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900">
+          <Info className="mt-0.5 size-4 shrink-0" />
+          <span>
+            店舗設定で「祝日は休業」がONになっているため、祝日は自動で休業になります。
+            この登録は不要です（お客様への表示を明示したい場合のみお使いください）。
+          </span>
+        </p>
+      )}
+      {presetValue === 'REGULAR' && (
+        <p className="flex items-start gap-2 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900">
+          <Info className="mt-0.5 size-4 shrink-0" />
+          <span>
+            ここで登録できるのは<strong>この日1日だけ</strong>です。毎週の定休日は
+            <Link href="/admin/business-hours" className="mx-0.5 font-medium underline">
+              営業時間
+            </Link>
+            でその曜日を削除して設定してください（毎週分をここに足す必要はありません）。
+          </span>
+        </p>
+      )}
+
+      {preset.needsHours && (
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="開店" error={errors.openMinute?.message}>
-            <Input type="time" defaultValue="10:00" {...register('openMinute', { setValueAs: (v: string) => (v ? hhmmToMinutes(v) : undefined) })} />
+          <Field label="開店">
+            <Input type="time" {...register('open')} />
           </Field>
-          <Field label="閉店" error={errors.closeMinute?.message}>
-            <Input type="time" defaultValue="18:00" {...register('closeMinute', { setValueAs: (v: string) => (v ? hhmmToMinutes(v) : undefined) })} />
+          <Field label="閉店">
+            <Input type="time" {...register('close')} />
           </Field>
         </div>
       )}
-      <Field label="理由（任意）" error={errors.reason?.message}>
+
+      <Field
+        label="理由（任意）"
+        error={errors.reason?.message}
+        hint="お客様のホームページの「お知らせ」にもこの文言が表示されます。"
+      >
         <Input {...register('reason')} placeholder="研修のため 等" />
       </Field>
       <Button type="submit" disabled={isSubmitting} className="w-fit">
