@@ -289,7 +289,10 @@ async function seedDemoTenant() {
   // 特別営業日デモ: 翌々週の月曜(定休)を特別営業、別の日を臨時休業
   const today = todayInZone(TZ);
   const specialOpen = nextWeekday(today, 1, 8); // 8日以降の最初の月曜
-  const tempClosed = isoDateAddDays(today, 10);
+  // 臨時休業日が特別営業日と重なると (shopId, date) の一意制約で seed 全体が落ちる。
+  // 実行日が金曜だと today+10 がちょうどこの月曜に当たるため、重なったら1日ずらす。
+  let tempClosed = isoDateAddDays(today, 10);
+  if (tempClosed === specialOpen) tempClosed = isoDateAddDays(today, 11);
   await prisma.specialBusinessDay.create({
     data: { tenantId: tenant.id, shopId: shop.id, date: dateOnly(specialOpen), type: 'SPECIAL_OPEN', openMinute: 660, closeMinute: 1020, reason: '特別営業（祝前日）' },
   });

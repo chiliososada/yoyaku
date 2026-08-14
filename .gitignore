@@ -48,3 +48,6 @@ prisma/*.db-journal
 
 # Claude session-local files
 .claude/
+
+# ローカル検証スクリプトのスクリーンショット出力
+.verify/

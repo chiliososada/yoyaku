@@ -8,6 +8,7 @@ import { resolveOpenIntervalsForDate } from '@/domain/booking/business-hours';
 import { resolveStaffWorkingIntervals } from '@/domain/booking/schedules';
 import type { DayStatus } from '@/domain/booking/types';
 import { jpHolidayName } from '@/lib/jp-holidays';
+import { monthGrid, monthFirstAdd, weekStart } from '@/lib/month-grid';
 import {
   zonedDateMinutesToUtc,
   todayInZone,
@@ -585,6 +586,41 @@ export interface WeekSchedule {
   selectedStaffId: string | null;
 }
 
+export interface MonthDayCell {
+  date: string;
+  day: number;
+  dow: number;
+  /** 表示中の月に属する日か。前後の月のはみ出し分は薄く出す。 */
+  inMonth: boolean;
+  isToday: boolean;
+  isClosed: boolean;
+  closedLabel: string | null;
+  holidayName: string | null;
+  bookingCount: number;
+  /** その日に出勤するスタッフ数（絞り込み中は 0 か 1）。 */
+  workingCount: number;
+  /** 1名に絞り込んでいるときだけ、その人の勤務時間を入れる。 */
+  shifts: ShiftSpan[];
+}
+
+export interface MonthSchedule {
+  year: number;
+  month: number;
+  /** グリッドの開始日（月曜）。前月のはみ出しを含む。 */
+  from: string;
+  to: string;
+  timezone: string;
+  /** 前月・翌月の1日。 */
+  prevDate: string;
+  nextDate: string;
+  today: string;
+  weeks: MonthDayCell[][];
+  /** 当月内の予約件数の合計（はみ出し分は含めない）。 */
+  totalBookings: number;
+  staffOptions: ScheduleStaffOption[];
+  selectedStaffId: string | null;
+}
+
 const DAY_STATUS_LABEL: Record<string, string> = {
   REGULAR_CLOSED: '定休日',
   HOLIDAY_CLOSED: '祝日休業',
@@ -809,12 +845,6 @@ export async function getDaySchedule(
   };
 }
 
-/** 週の起点（月曜）へ丸める。日本のシフト表は月曜始まりが一般的。 */
-function weekStart(date: string): string {
-  const dow = isoDateDayOfWeek(date); // 0=日
-  return isoDateAddDays(date, dow === 0 ? -6 : 1 - dow);
-}
-
 /**
  * 週間シフト表（縦: スタッフ / 横: 7日）。
  * 店主が紙で作っている表をそのまま置き換えるための形。
@@ -924,6 +954,107 @@ export async function getWeekSchedule(
     today,
     columns,
     rows,
+    staffOptions: options,
+    selectedStaffId,
+  };
+}
+
+/**
+ * 月間カレンダー（7列×5〜6行）。
+ *
+ * 週表示は7日しか映らないので、来月の埋まり具合や連休の位置が分からない。
+ * ここは1日を細かく見る画面ではなく、「どの日が混んでいて、どの日が空いているか」を
+ * ひと目で掴んで、気になった日をクリックして日表示へ降りるための入口。
+ */
+export async function getMonthSchedule(
+  tenantId: string,
+  shopId: string,
+  timezone: string,
+  date: string,
+  staffId?: string | null,
+): Promise<MonthSchedule> {
+  // 月曜始まりのグリッド。週表示と列の並びを揃える（切り替えるたびに曜日がずれると読み違える）。
+  const { year, month, monthStart, from, to, dates } = monthGrid(date);
+  const endExclusive = isoDateAddDays(to, 1);
+
+  const { options, selected, selectedStaffId } = await loadBoardStaff(tenantId, shopId, staffId);
+  const staffIds = selected.map((s) => s.id);
+
+  const [shop, ctx, bookings] = await Promise.all([
+    prisma.shop.findFirst({ where: { id: shopId, tenantId }, select: { closeOnNationalHolidays: true } }),
+    loadRangeContext(
+      prisma,
+      shopId,
+      new Date(`${from}T00:00:00.000Z`),
+      new Date(`${endExclusive}T00:00:00.000Z`),
+      staffIds,
+    ),
+    prisma.booking.findMany({
+      where: {
+        tenantId,
+        shopId,
+        deletedAt: null,
+        status: { in: ['CONFIRMED', 'COMPLETED', 'PENDING'] },
+        startAt: {
+          gte: zonedDateMinutesToUtc(from, 0, timezone),
+          lt: zonedDateMinutesToUtc(endExclusive, 0, timezone),
+        },
+        ...(selectedStaffId ? { staffId: selectedStaffId } : {}),
+      },
+      select: { startAt: true },
+    }),
+  ]);
+
+  const closeOnNationalHolidays = shop?.closeOnNationalHolidays ?? true;
+
+  // 日ごとの件数。担当未割当の予約も店としては受けている以上、数に入れる。
+  const counts = new Map<string, number>();
+  for (const b of bookings) {
+    const d = zonedDateString(b.startAt, timezone);
+    counts.set(d, (counts.get(d) ?? 0) + 1);
+  }
+
+  const today = todayInZone(timezone);
+  const cells: MonthDayCell[] = dates.map((d) => {
+    const { dayStatus, openSpans, shiftsByStaff } = resolveDayShifts({
+      date: d,
+      timezone,
+      staffIds,
+      ctx,
+      closeOnNationalHolidays,
+    });
+    const closed = openSpans.length === 0;
+    let workingCount = 0;
+    for (const id of staffIds) if ((shiftsByStaff.get(id)?.length ?? 0) > 0) workingCount++;
+    return {
+      date: d,
+      day: Number(d.slice(8, 10)),
+      dow: isoDateDayOfWeek(d),
+      inMonth: d.slice(0, 7) === monthStart.slice(0, 7),
+      isToday: d === today,
+      isClosed: closed,
+      closedLabel: closed ? (DAY_STATUS_LABEL[dayStatus] ?? '休業') : null,
+      holidayName: jpHolidayName(d),
+      bookingCount: counts.get(d) ?? 0,
+      workingCount,
+      shifts: selectedStaffId ? (shiftsByStaff.get(selectedStaffId) ?? []) : [],
+    };
+  });
+
+  const weeks: MonthDayCell[][] = [];
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+
+  return {
+    year,
+    month,
+    from,
+    to,
+    timezone,
+    prevDate: monthFirstAdd(monthStart, -1),
+    nextDate: monthFirstAdd(monthStart, 1),
+    today,
+    weeks,
+    totalBookings: cells.reduce((sum, c) => sum + (c.inMonth ? c.bookingCount : 0), 0),
     staffOptions: options,
     selectedStaffId,
   };

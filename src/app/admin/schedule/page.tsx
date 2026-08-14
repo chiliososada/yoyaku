@@ -5,6 +5,7 @@ import {
   getPrimaryShop,
   getDaySchedule,
   getWeekSchedule,
+  getMonthSchedule,
   getStaffIdForUser,
   type ScheduleStaffOption,
   type ShiftSpan,
@@ -25,6 +26,17 @@ const PX_PER_MIN = 1.5; // 1分=1.5px → 1時間=90px
 const ROW_H = 56;
 
 const DOW_JP = ['日', '月', '火', '水', '木', '金', '土'];
+/** 月表示の列順（週表示に合わせて月曜始まり）。 */
+const MONTH_DOW = [1, 2, 3, 4, 5, 6, 0];
+
+type View = 'day' | 'week' | 'month';
+
+/** 前後移動と「今〜」ボタンの文言。表示単位で呼び名が変わる。 */
+const NAV_LABEL: Record<View, { prev: string; next: string; today: string }> = {
+  day: { prev: '前日', next: '翌日', today: '今日' },
+  week: { prev: '前週', next: '翌週', today: '今週' },
+  month: { prev: '前月', next: '翌月', today: '今月' },
+};
 
 const STATUS_STYLE: Record<string, string> = {
   CONFIRMED: 'bg-primary/90 text-primary-foreground hover:bg-primary',
@@ -33,10 +45,10 @@ const STATUS_STYLE: Record<string, string> = {
 };
 
 /** 表示条件を保ったままリンクを組み立てる（切替でスタッフ絞り込みが消えると使い物にならない）。 */
-function hrefFor(params: { date?: string; view?: 'day' | 'week'; staff?: string | null }): string {
+function hrefFor(params: { date?: string; view?: View; staff?: string | null }): string {
   const q = new URLSearchParams();
   if (params.date) q.set('date', params.date);
-  if (params.view === 'week') q.set('view', 'week');
+  if (params.view && params.view !== 'day') q.set('view', params.view);
   if (params.staff) q.set('staff', params.staff);
   const s = q.toString();
   return s ? `/admin/schedule?${s}` : '/admin/schedule';
@@ -55,20 +67,39 @@ export default async function SchedulePage({
   const user = await requireTenantUser();
   const shop = await getPrimaryShop(user.tenantId);
   const date = isDate(searchParams.date) ? searchParams.date : todayInZone(shop.timezone);
-  const view = searchParams.view === 'week' ? 'week' : 'day';
+  const view: View =
+    searchParams.view === 'week' ? 'week' : searchParams.view === 'month' ? 'month' : 'day';
   const staffParam = searchParams.staff || null;
 
-  const [dayBoard, weekBoard, myStaffId] = await Promise.all([
+  const [dayBoard, weekBoard, monthBoard, myStaffId] = await Promise.all([
     view === 'day' ? getDaySchedule(user.tenantId, shop.id, shop.timezone, date, staffParam) : null,
     view === 'week' ? getWeekSchedule(user.tenantId, shop.id, shop.timezone, date, staffParam) : null,
+    view === 'month' ? getMonthSchedule(user.tenantId, shop.id, shop.timezone, date, staffParam) : null,
     getStaffIdForUser(user.tenantId, user.id, shop.id),
   ]);
 
-  const board = dayBoard ?? weekBoard!;
+  const board = dayBoard ?? weekBoard ?? monthBoard!;
   const staffOptions = board.staffOptions;
   // 実際に適用された絞り込みに従う。サービス側で未知のIDは null へ丸めているので、
   // ここで別途判定すると「チップは全員、表は空」というちぐはぐな状態になる。
   const staff = board.selectedStaffId;
+
+  // 年を必ず出す。「9月14日」だけだと、来年の予定を見ているのか今年なのかが画面から分からない。
+  const nav = dayBoard
+    ? { label: <DayLabel date={dayBoard.date} />, isCurrent: dayBoard.date === dayBoard.today }
+    : weekBoard
+      ? {
+          label: <span className="px-1 text-sm font-semibold tabular-nums">{weekRangeLabel(weekBoard.from, weekBoard.to)}</span>,
+          isCurrent: weekBoard.from <= weekBoard.today && weekBoard.today <= weekBoard.to,
+        }
+      : {
+          label: (
+            <span className="min-w-28 text-center text-sm font-semibold tabular-nums">
+              {monthBoard!.year}年{monthBoard!.month}月
+            </span>
+          ),
+          isCurrent: monthBoard!.today.slice(0, 7) === `${monthBoard!.year}-${String(monthBoard!.month).padStart(2, '0')}`,
+        };
 
   return (
     <div>
@@ -78,14 +109,23 @@ export default async function SchedulePage({
         action={
           <div className="flex flex-wrap items-center gap-2">
             <ViewToggle view={view} date={date} staff={staff} />
-            <DateNav view={view} board={board} staff={staff} />
+            <DateNav
+              view={view}
+              prevDate={board.prevDate}
+              nextDate={board.nextDate}
+              staff={staff}
+              label={nav.label}
+              isCurrent={nav.isCurrent}
+            />
           </div>
         }
       />
 
       <StaffFilter options={staffOptions} selected={staff} date={date} view={view} myStaffId={myStaffId} />
 
-      {weekBoard ? (
+      {monthBoard ? (
+        <MonthBoard board={monthBoard} staff={staff} />
+      ) : weekBoard ? (
         <WeekBoard board={weekBoard} staff={staff} myStaffId={myStaffId} />
       ) : (
         <DayBoard board={dayBoard!} myStaffId={myStaffId} />
@@ -94,8 +134,33 @@ export default async function SchedulePage({
   );
 }
 
-function ViewToggle({ view, date, staff }: { view: 'day' | 'week'; date: string; staff: string | null }) {
-  const item = (v: 'day' | 'week', label: string) => (
+function DayLabel({ date }: { date: string }) {
+  const di = describeIsoDate(date);
+  return (
+    <span
+      className={cn(
+        'px-1 text-sm font-semibold tabular-nums',
+        di.dow === 0 && 'text-red-600',
+        di.dow === 6 && 'text-blue-600',
+      )}
+    >
+      {date.slice(0, 4)}年{di.month}月{di.day}日({di.weekday})
+    </span>
+  );
+}
+
+/** 例: 2026年9月14日 – 9月20日。年をまたぐ週は両側に年を出す。 */
+function weekRangeLabel(from: string, to: string): string {
+  const a = describeIsoDate(from);
+  const b = describeIsoDate(to);
+  const ay = from.slice(0, 4);
+  const by = to.slice(0, 4);
+  const tail = ay === by ? `${b.month}月${b.day}日` : `${by}年${b.month}月${b.day}日`;
+  return `${ay}年${a.month}月${a.day}日 – ${tail}`;
+}
+
+function ViewToggle({ view, date, staff }: { view: View; date: string; staff: string | null }) {
+  const item = (v: View, label: string) => (
     <Link
       href={hrefFor({ date, view: v, staff })}
       className={cn(
@@ -110,67 +175,50 @@ function ViewToggle({ view, date, staff }: { view: 'day' | 'week'; date: string;
     <div className="flex items-center gap-1 rounded-lg border bg-white p-1">
       {item('day', '日')}
       {item('week', '週')}
+      {item('month', '月')}
     </div>
   );
 }
 
 function DateNav({
   view,
-  board,
+  prevDate,
+  nextDate,
   staff,
+  label,
+  isCurrent,
 }: {
-  view: 'day' | 'week';
-  board: { prevDate: string; nextDate: string; today: string } & ({ date: string } | { from: string; to: string });
+  view: View;
+  prevDate: string;
+  nextDate: string;
   staff: string | null;
+  label: React.ReactNode;
+  isCurrent: boolean;
 }) {
-  const label =
-    'date' in board
-      ? (() => {
-          const di = describeIsoDate(board.date);
-          return (
-            <span
-              className={cn(
-                'min-w-28 text-center text-sm font-semibold tabular-nums',
-                di.dow === 0 && 'text-red-600',
-                di.dow === 6 && 'text-blue-600',
-              )}
-            >
-              {di.month}月{di.day}日({di.weekday})
-            </span>
-          );
-        })()
-      : (() => {
-          const a = describeIsoDate(board.from);
-          const b = describeIsoDate(board.to);
-          return (
-            <span className="min-w-36 text-center text-sm font-semibold tabular-nums">
-              {a.month}/{a.day} – {b.month}/{b.day}
-            </span>
-          );
-        })();
-
-  const isCurrent = 'date' in board ? board.date === board.today : board.from <= board.today && board.today <= board.to;
-
+  const t = NAV_LABEL[view];
   return (
     <div className="flex items-center gap-1 rounded-lg border bg-white p-1">
       <Link
-        href={hrefFor({ date: board.prevDate, view, staff })}
-        className="inline-flex size-8 items-center justify-center rounded-md hover:bg-slate-100"
-        aria-label={view === 'week' ? '前週' : '前日'}
+        href={hrefFor({ date: prevDate, view, staff })}
+        className="inline-flex size-8 shrink-0 items-center justify-center rounded-md hover:bg-slate-100"
+        aria-label={t.prev}
       >
         <ChevronLeft className="size-4" />
       </Link>
-      {label}
+      <span className="whitespace-nowrap">{label}</span>
       <Link
-        href={hrefFor({ date: board.nextDate, view, staff })}
-        className="inline-flex size-8 items-center justify-center rounded-md hover:bg-slate-100"
-        aria-label={view === 'week' ? '翌週' : '翌日'}
+        href={hrefFor({ date: nextDate, view, staff })}
+        className="inline-flex size-8 shrink-0 items-center justify-center rounded-md hover:bg-slate-100"
+        aria-label={t.next}
       >
         <ChevronRight className="size-4" />
       </Link>
       {!isCurrent && (
-        <Link href={hrefFor({ view, staff })} className="ml-1 rounded-md border px-2.5 py-1 text-xs hover:bg-slate-50">
-          {view === 'week' ? '今週' : '今日'}
+        <Link
+          href={hrefFor({ view, staff })}
+          className="ml-1 shrink-0 whitespace-nowrap rounded-md border px-2.5 py-1 text-xs hover:bg-slate-50"
+        >
+          {t.today}
         </Link>
       )}
     </div>
@@ -187,7 +235,7 @@ function StaffFilter({
   options: ScheduleStaffOption[];
   selected: string | null;
   date: string;
-  view: 'day' | 'week';
+  view: View;
   myStaffId: string | null;
 }) {
   if (options.length <= 1) return null;
@@ -512,6 +560,128 @@ function WeekBoard({
       <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
         <span>時刻＝その日の実際の勤務時間（曜日シフト・個別の出欠・店休日を反映）</span>
         <span>· 日付セルをクリックでその日の詳細へ</span>
+      </div>
+    </>
+  );
+}
+
+// ---- 月表示（7列 × 5〜6週）----
+
+function MonthBoard({
+  board: m,
+  staff,
+}: {
+  board: Awaited<ReturnType<typeof getMonthSchedule>>;
+  staff: string | null;
+}) {
+  return (
+    <>
+      <p className="mb-2 text-xs text-muted-foreground">
+        {m.year}年{m.month}月の予約 <strong className="text-sm text-foreground tabular-nums">{m.totalBookings}</strong> 件
+        {staff && <span className="ml-1">（絞り込み中）</span>}
+      </p>
+
+      {/*
+        表(table)ではなく grid で組む。table のセルに入れたリンクは高さ100%が効かず、
+        同じ行に背の高いセルがあるとその分だけ下に「押せない余白」が残る（実測で27px）。
+        grid ならセル自体が行の高さまで伸びるので、日付のどこを押してもその日へ移動できる。
+        枠線は gap の地色で描く（隣り合う枠線が二重にならない）。
+      */}
+      <div className="overflow-x-auto rounded-xl border bg-white">
+        <div className="min-w-[640px]">
+          <div className="grid grid-cols-7 gap-px border-b bg-slate-200">
+            {MONTH_DOW.map((d) => (
+              <div
+                key={d}
+                className={cn(
+                  'bg-slate-50 px-2 py-1.5 text-center text-xs font-medium',
+                  d === 0 ? 'text-red-600' : d === 6 ? 'text-blue-600' : 'text-muted-foreground',
+                )}
+              >
+                {DOW_JP[d]}
+              </div>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-7 gap-px bg-slate-200">
+            {m.weeks.flat().map((c) => (
+              <Link
+                key={c.date}
+                href={hrefFor({ date: c.date, view: 'day', staff })}
+                className={cn(
+                  'flex min-h-[92px] flex-col gap-1 p-1.5 transition-colors hover:bg-primary/[0.06]',
+                  'bg-white',
+                  // 前後の月は薄く。消してしまうと週の並びが崩れて読みにくい。
+                  !c.inMonth && 'bg-slate-50/80',
+                  c.inMonth && c.isClosed && 'bg-slate-100',
+                  c.isToday && 'bg-primary/10',
+                )}
+              >
+                <span className="flex items-center justify-between gap-1">
+                  <span
+                    className={cn(
+                      'text-xs font-semibold tabular-nums',
+                      !c.inMonth && 'text-muted-foreground/60',
+                      c.inMonth && (c.dow === 0 || c.holidayName) && 'text-red-600',
+                      c.inMonth && c.dow === 6 && !c.holidayName && 'text-blue-600',
+                    )}
+                  >
+                    {c.day}
+                  </span>
+                  {c.isToday && (
+                    <span className="rounded bg-primary px-1 py-0.5 text-[9px] font-bold leading-none text-primary-foreground">
+                      今日
+                    </span>
+                  )}
+                </span>
+
+                {c.holidayName && (
+                  <span className="truncate text-[10px] leading-tight text-red-500" title={c.holidayName}>
+                    {c.holidayName}
+                  </span>
+                )}
+
+                {c.isClosed ? (
+                  <span className="text-[10px] text-muted-foreground">{c.closedLabel ?? '休業'}</span>
+                ) : staff ? (
+                  // 1名に絞っているときは「その人が何時から何時まで出るか」を出す。
+                  c.shifts.length > 0 ? (
+                    <span className="text-[10px] leading-tight tabular-nums text-slate-700">
+                      {c.shifts.map((sh) => (
+                        <span key={sh.startMin} className="block whitespace-nowrap">
+                          {minutesToHHmm(sh.startMin)}–{minutesToHHmm(sh.endMin)}
+                        </span>
+                      ))}
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-muted-foreground">休み</span>
+                  )
+                ) : (
+                  <span className="text-[10px] text-muted-foreground">
+                    {c.workingCount > 0 ? `出勤${c.workingCount}名` : '出勤なし'}
+                  </span>
+                )}
+
+                {c.bookingCount > 0 && (
+                  <span className="mt-auto inline-flex w-fit items-center rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-primary">
+                    予約{c.bookingCount}
+                  </span>
+                )}
+              </Link>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        <span className="flex items-center gap-1">
+          <span className="size-2.5 rounded-sm bg-slate-100 ring-1 ring-inset ring-slate-300" /> 休業日
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="size-2.5 rounded-full bg-primary/20" /> 予約件数
+        </span>
+        <span>· 日付をクリックでその日のタイムラインへ</span>
+        <span>· スタッフを選ぶとその人の勤務時間が入ります</span>
       </div>
     </>
   );
