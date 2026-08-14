@@ -1,13 +1,14 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Check } from 'lucide-react';
+import { Check, Loader2, MapPin, Undo2 } from 'lucide-react';
 import { shopSettingsSchema, type ShopSettingsInput } from '@/lib/validation/admin';
 import { updateShopSettingsAction } from '@/server/actions/admin-actions';
 import { Input } from '@/components/ui/input';
+import { normalizePostalCode, formatPostalCode } from '@/lib/postal';
 import { Field, Select, TextArea, CheckboxRow, FormError, SubmitBar } from './form-kit';
 
 export function ShopSettingsForm({ shopId, initial }: { shopId: string; initial: ShopSettingsInput }) {
@@ -17,11 +18,70 @@ export function ShopSettingsForm({ shopId, initial }: { shopId: string; initial:
   const {
     register,
     handleSubmit,
+    setValue,
+    getValues,
     formState: { errors, isSubmitting },
   } = useForm<ShopSettingsInput>({
     resolver: zodResolver(shopSettingsSchema),
     defaultValues: initial,
   });
+
+  // ---- 郵便番号から住所を自動入力 ----
+  const [lookup, setLookup] = useState<{ busy: boolean; note: string | null; error: string | null }>({
+    busy: false,
+    note: null,
+    error: null,
+  });
+  /** 自動入力の直前の値。取り消せないと、手入力を消された店主が困る。 */
+  const beforeFill = useRef<{ prefecture: string; city: string; address: string } | null>(null);
+  /** 同じ番号を何度も引かない＋古い応答が後から上書きするのを防ぐ。 */
+  const lastCode = useRef<string | null>(null);
+
+  const applyPostal = async (raw: string) => {
+    const code = normalizePostalCode(raw);
+    if (!code || code === lastCode.current) return;
+    lastCode.current = code;
+    setLookup({ busy: true, note: null, error: null });
+    try {
+      const res = await fetch(`/api/postal?code=${code}`);
+      const json = (await res.json()) as { address?: { prefecture: string; city: string; town: string }; error?: string };
+      if (!res.ok || !json.address) {
+        setLookup({ busy: false, note: null, error: json.error ?? '住所を取得できませんでした。' });
+        return;
+      }
+      // 取り消せるように直前の値を控える
+      beforeFill.current = {
+        prefecture: getValues('prefecture') ?? '',
+        city: getValues('city') ?? '',
+        address: getValues('address') ?? '',
+      };
+      const { prefecture, city, town } = json.address;
+      setValue('prefecture', prefecture, { shouldDirty: true });
+      setValue('city', city, { shouldDirty: true });
+      // 番地・建物は店主が入力する欄。町域を入れるのは空のときだけにして、
+      // 入力済みの番地を消さない（消すと気づかないまま保存され、住所が壊れる）。
+      const current = (getValues('address') ?? '').trim();
+      if (current === '' && town) setValue('address', town, { shouldDirty: true });
+      setLookup({
+        busy: false,
+        error: null,
+        note: `${formatPostalCode(code)} → ${prefecture} ${city}${town ? ` ${town}` : ''} を入力しました。`,
+      });
+    } catch {
+      setLookup({ busy: false, note: null, error: '住所の自動入力に失敗しました。直接ご入力ください。' });
+    }
+  };
+
+  const undoFill = () => {
+    const b = beforeFill.current;
+    if (!b) return;
+    setValue('prefecture', b.prefecture, { shouldDirty: true });
+    setValue('city', b.city, { shouldDirty: true });
+    setValue('address', b.address, { shouldDirty: true });
+    beforeFill.current = null;
+    lastCode.current = null;
+    setLookup({ busy: false, note: null, error: null });
+  };
 
   const onSubmit = async (data: ShopSettingsInput) => {
     setServerError(null);
@@ -63,7 +123,20 @@ export function ShopSettingsForm({ shopId, initial }: { shopId: string; initial:
       </div>
       <div className="grid gap-4 sm:grid-cols-4">
         <Field label="郵便番号" error={errors.postalCode?.message}>
-          <Input {...register('postalCode')} placeholder="150-0002" />
+          <div className="relative">
+            <Input
+              {...register('postalCode', {
+                // 7桁そろった時点で引く。入力途中では動かない（打つたびに問い合わせない）。
+                onChange: (e: React.ChangeEvent<HTMLInputElement>) => void applyPostal(e.target.value),
+              })}
+              placeholder="150-0002"
+              inputMode="numeric"
+              autoComplete="postal-code"
+            />
+            {lookup.busy && (
+              <Loader2 className="absolute right-2.5 top-1/2 size-4 -translate-y-1/2 animate-spin text-muted-foreground" />
+            )}
+          </div>
         </Field>
         <Field label="都道府県" error={errors.prefecture?.message}>
           <Input {...register('prefecture')} placeholder="東京都" />
@@ -72,9 +145,28 @@ export function ShopSettingsForm({ shopId, initial }: { shopId: string; initial:
           <Input {...register('city')} placeholder="渋谷区" />
         </Field>
         <Field label="番地・建物" error={errors.address?.message}>
-          <Input {...register('address')} />
+          <Input {...register('address')} placeholder="1-2-3 ◯◯ビル4F" />
         </Field>
       </div>
+
+      {/* 自動入力の結果。何を入れたのかを示し、取り消せるようにする
+          （黙って書き換わると、手入力した住所が消えたことに気づけない）。 */}
+      {lookup.note && (
+        <p className="flex flex-wrap items-center gap-2 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs text-sky-900">
+          <MapPin className="size-3.5 shrink-0" />
+          <span>{lookup.note}</span>
+          {beforeFill.current && (
+            <button type="button" onClick={undoFill} className="inline-flex items-center gap-1 font-medium underline">
+              <Undo2 className="size-3" /> 元に戻す
+            </button>
+          )}
+        </p>
+      )}
+      {lookup.error && (
+        <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          {lookup.error}
+        </p>
+      )}
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="公開状態" error={errors.status?.message}>
           <Select {...register('status')}>
