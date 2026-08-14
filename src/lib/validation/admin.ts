@@ -61,10 +61,15 @@ export const serviceFormSchema = z
     segments: z.array(segmentSchema).optional(),
     options: z.array(serviceOptionFormSchema).max(20).default([]),
   })
-  .refine((v) => !v.requiresStaff || v.staffIds.length > 0, {
-    message: '担当スタッフを1名以上選択してください。',
-    path: ['staffIds'],
-  })
+  /**
+   * 「担当が必要なのに0名」の判定はここでは行わない。
+   *
+   * この規則には「その店舗にスタッフが1人でも居るか」という文脈が要る。
+   * スキーマは DB を知らないため一律で弾いていたが、その結果
+   * **開店準備でメニューを先に作ろうとした店主が、永久に保存できない**状態になっていた
+   * （スタッフ0名 → 「1名以上選択してください」→ 選べる候補が無い → 登録ボタンが通らない）。
+   * 実際の判定は merchant-mutation-service 側で、スタッフの有無を見て行う。
+   */
   .refine((v) => v.salePriceJpy == null || v.salePriceJpy < v.priceJpy, {
     message: 'セール価格は通常料金より安く設定してください。',
     path: ['salePriceJpy'],

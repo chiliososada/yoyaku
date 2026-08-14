@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { Plus } from 'lucide-react';
+import { Plus, TriangleAlert } from 'lucide-react';
 import { requireTenantUser } from '@/server/auth/authorize';
 import { getPrimaryShop, listServices } from '@/server/services/merchant-service';
 import { PageHeader, Table, Th, Td, StatusPill, EmptyState } from '@/components/admin/ui';
@@ -52,7 +52,17 @@ export default async function ServicesPage() {
                 <Td className="text-right tabular-nums">{s.durationMin}分</Td>
                 <Td className="text-right tabular-nums">{s.bufferAfterMin}分</Td>
                 <Td className="text-right tabular-nums">{s.capacity}</Td>
-                <Td className="text-right tabular-nums">{s._count.serviceStaff}</Td>
+                <Td className="text-right tabular-nums">
+                  {/* 担当が必要なのに0名＝この時点で予約を受けられない。
+                      一覧で見えないと「公開したのに誰も予約できない」の原因に辿り着けない。 */}
+                  {s.requiresStaff && s._count.serviceStaff === 0 ? (
+                    <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">
+                      <TriangleAlert className="size-3" /> 担当未設定
+                    </span>
+                  ) : (
+                    s._count.serviceStaff
+                  )}
+                </Td>
                 <Td className="text-right tabular-nums">
                   {s.salePriceJpy != null ? (
                     <span className="inline-flex items-center gap-1.5">

@@ -7,6 +7,7 @@ import { prisma } from '@/lib/db';
 import * as svc from '@/server/services/merchant-mutation-service';
 import { getDayAvailability } from '@/server/services/booking-service';
 import { seedScenario, cleanupTenant } from '../helpers/seed';
+import { isAppError } from '@/lib/errors';
 
 const createdTenants: string[] = [];
 beforeAll(async () => { await prisma.$queryRaw`SELECT 1`; });
@@ -289,5 +290,73 @@ describe('休業・欠勤の登録は既存予約の件数を返す', () => {
       date: '2026-10-09', isWorking: true, startMinute: 600, endMinute: 1140,
     });
     expect(res.affectedBookings).toBe(0);
+  });
+});
+
+describe('メニューの担当スタッフ: 文脈を見て判定する', () => {
+  const svcInput = (over: Record<string, unknown> = {}) => ({
+    name: 'テストメニュー',
+    category: '',
+    description: '',
+    durationMin: 60,
+    bufferAfterMin: 0,
+    priceJpy: 4000,
+    salePriceJpy: null,
+    capacity: 1,
+    requiresStaff: true,
+    slotIntervalMin: 15,
+    color: '',
+    isActive: true,
+    sortOrder: 0,
+    staffIds: [] as string[],
+    options: [],
+    ...over,
+  });
+
+  it('スタッフが1人も居ない店では、担当0名でも保存できる（開店準備を止めない）', async () => {
+    const sc = await seedScenario({ staffCount: 0 });
+    createdTenants.push(sc.tenantId);
+    const created = await svc.createService(sc.tenantId, sc.shopId, svcInput() as never);
+    expect(created.id).toBeTruthy();
+    expect(created.requiresStaff).toBe(true);
+  });
+
+  it('スタッフが居るのに0名選択は拒否する（選び忘れは入力ミス）', async () => {
+    const sc = await seedScenario({ staffCount: 1 });
+    createdTenants.push(sc.tenantId);
+    let msg = '';
+    try {
+      await svc.createService(sc.tenantId, sc.shopId, svcInput() as never);
+      throw new Error('expected to throw');
+    } catch (e) {
+      msg = isAppError(e) ? e.userMessage : String((e as Error).message);
+    }
+    expect(msg).toContain('担当スタッフを1名以上');
+    // 逃げ道も文言で示す
+    expect(msg).toContain('チェックを外して');
+  });
+
+  it('担当不要にすればスタッフが居ても0名で保存できる', async () => {
+    const sc = await seedScenario({ staffCount: 1 });
+    createdTenants.push(sc.tenantId);
+    const created = await svc.createService(
+      sc.tenantId,
+      sc.shopId,
+      svcInput({ requiresStaff: false }) as never,
+    );
+    expect(created.requiresStaff).toBe(false);
+  });
+
+  it('更新でも同じ判定（スタッフ登録後に0名へ戻すのは拒否）', async () => {
+    const sc = await seedScenario({ staffCount: 1 });
+    createdTenants.push(sc.tenantId);
+    const created = await svc.createService(
+      sc.tenantId,
+      sc.shopId,
+      svcInput({ staffIds: [sc.staffIds[0]!] }) as never,
+    );
+    await expect(
+      svc.updateService(sc.tenantId, sc.shopId, created.id, svcInput({ staffIds: [] }) as never),
+    ).rejects.toThrow();
   });
 });

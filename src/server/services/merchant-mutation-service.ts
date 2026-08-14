@@ -216,8 +216,34 @@ export async function disableStaffLogin(tenantId: string, shopId: string, staffI
 }
 
 // ---- サービス ----
+/**
+ * 「担当スタッフが必要」なのに1名も選ばれていないメニューを、文脈を見て判定する。
+ *
+ * 一律に弾くと、開店準備でメニューを先に作ろうとした店主が詰む
+ * （スタッフ0名 → 「1名以上選択してください」→ 選べる候補が無い → 何をしても保存できない）。
+ * 一方、スタッフが居るのに選び忘れたのは本当の入力ミスなので、そこは止める。
+ * スタッフが1人も居ない段階では通し、代わりに開業準備チェック（getPublishReadiness の
+ * menusWithoutStaff）とメニュー一覧のバッジで「まだ予約を受けられない」ことを見せ続ける。
+ */
+async function assertStaffSelectionUsable(
+  shopId: string,
+  input: { requiresStaff: boolean; staffIds: string[] },
+): Promise<void> {
+  if (!input.requiresStaff || input.staffIds.length > 0) return;
+  const anyStaff = await prisma.staff.findFirst({
+    where: { shopId, status: 'ACTIVE', isBookable: true, deletedAt: null },
+    select: { id: true },
+  });
+  if (anyStaff) {
+    throw Errors.validation(
+      '担当スタッフを1名以上選択してください。（担当が不要なメニューの場合は「担当スタッフが必要」のチェックを外してください）',
+    );
+  }
+}
+
 export async function createService(tenantId: string, shopId: string, input: ServiceFormInput) {
   await assertShopInTenant(tenantId, shopId);
+  await assertStaffSelectionUsable(shopId, input);
   return prisma.$transaction(async (tx) => {
     const service = await tx.service.create({
       data: {
@@ -312,6 +338,7 @@ async function syncServiceOptions(
 export async function updateService(tenantId: string, shopId: string, serviceId: string, input: ServiceFormInput) {
   const existing = await prisma.service.findFirst({ where: { id: serviceId, tenantId, shopId, deletedAt: null }, select: { id: true, shopId: true } });
   if (!existing) throw Errors.notFound('メニューが見つかりません。');
+  await assertStaffSelectionUsable(shopId, input);
   return prisma.$transaction(async (tx) => {
     const service = await tx.service.update({
       where: { id: serviceId },

@@ -4,9 +4,10 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useForm, useFieldArray, Controller } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Plus, X } from 'lucide-react';
+import { Info, Plus, UserPlus, X } from 'lucide-react';
 import { serviceFormSchema, type ServiceFormInput } from '@/lib/validation/admin';
 import { createServiceAction, updateServiceAction } from '@/server/actions/admin-actions';
+import Link from 'next/link';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Field, Select, TextArea, CheckboxRow, CheckboxGroup, FormError, SubmitBar } from './form-kit';
@@ -24,9 +25,13 @@ export function ServiceForm({
 }) {
   const router = useRouter();
   const [serverError, setServerError] = useState<string | null>(null);
+  /** スタッフが居るのに選び忘れたときだけ出す（居ない段階では出さない）。 */
+  const [staffError, setStaffError] = useState<string | null>(null);
+  const noStaffYet = staff.length === 0;
   const {
     register,
     control,
+    watch,
     handleSubmit,
     formState: { errors, isSubmitting },
   } = useForm<ServiceFormInput>({
@@ -57,8 +62,18 @@ export function ServiceForm({
     remove: optRemove,
   } = useFieldArray({ control, name: 'options' });
 
+  const requiresStaff = watch('requiresStaff');
+  const staffIds = watch('staffIds') ?? [];
+
   const onSubmit = async (data: ServiceFormInput) => {
     setServerError(null);
+    setStaffError(null);
+    // スタッフが居るのに0名選択は入力ミス。サーバーまで往復させずここで止める。
+    // 逆にスタッフが1人も居ない開店準備中は、保存できないと先に進めないので通す。
+    if (!noStaffYet && data.requiresStaff && (data.staffIds ?? []).length === 0) {
+      setStaffError('担当スタッフを1名以上選択してください。担当が不要なメニューなら「担当スタッフが必要」のチェックを外してください。');
+      return;
+    }
     const res = serviceId
       ? await updateServiceAction(serviceId, shopId, data)
       : await createServiceAction(shopId, data);
@@ -121,7 +136,7 @@ export function ServiceForm({
         <CheckboxRow label="公開する" {...register('isActive')} />
       </div>
 
-      <Field label="担当スタッフ" error={errors.staffIds?.message}>
+      <Field label="担当スタッフ" error={staffError ?? errors.staffIds?.message}>
         <Controller
           control={control}
           name="staffIds"
@@ -130,6 +145,34 @@ export function ServiceForm({
           )}
         />
       </Field>
+      {/*
+        スタッフ0名でも保存できる。ここで止めると、開店準備でメニューを先に作った店主が
+        「1名以上選んでください」と言われたまま候補が無く、何をしても先へ進めなくなる。
+        代わりに、この状態では予約を受けられないことと、次にやることを明示する。
+      */}
+      {noStaffYet && requiresStaff && (
+        <div className="flex items-start gap-2 rounded-md border border-sky-200 bg-sky-50 px-3 py-2.5 text-xs text-sky-900">
+          <Info className="mt-0.5 size-4 shrink-0" />
+          <div className="grid gap-1.5">
+            <span>
+              スタッフがまだ登録されていないため、このメニューは<strong>このまま保存できます</strong>が、
+              お客様の予約ページには空き時間が表示されません（担当できる人がいないため）。
+              スタッフを登録したあと、この画面で担当にチェックを入れてください。
+            </span>
+            <Link
+              href="/admin/staff/new"
+              className="inline-flex w-fit items-center gap-1.5 rounded-md border border-sky-300 bg-white px-2.5 py-1 font-medium text-sky-900 hover:bg-sky-100"
+            >
+              <UserPlus className="size-3.5" /> スタッフを登録する
+            </Link>
+          </div>
+        </div>
+      )}
+      {!noStaffYet && requiresStaff && staffIds.length === 0 && !staffError && (
+        <p className="text-xs text-muted-foreground">
+          担当が不要なメニュー（物販など）は「担当スタッフが必要」のチェックを外してください。
+        </p>
+      )}
 
       <Field label="時間帯分割（任意）" hint="塗布→放置(空き)→仕上げ など、占有しない待ち時間がある場合に設定。未設定なら所要時間どおり連続占有。">
         <div className="grid gap-2">

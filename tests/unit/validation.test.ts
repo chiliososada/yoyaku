@@ -341,3 +341,41 @@ describe('予約ルール: 組合せで「1枠も出ない」設定を弾く', (
     expect(parse({ leadTimeMinHours: 2, cancellationDeadlineHours: 24 }).success).toBe(true);
   });
 });
+
+describe('メニュー: 担当スタッフの必須判定はスキーマで行わない', () => {
+  const base = {
+    name: 'カット',
+    durationMin: 60,
+    bufferAfterMin: 0,
+    priceJpy: 4000,
+    salePriceJpy: null,
+    capacity: 1,
+    requiresStaff: true,
+    slotIntervalMin: 15,
+    isActive: true,
+    sortOrder: 0,
+    staffIds: [] as string[],
+    options: [],
+  };
+
+  it('担当が必要でスタッフ0名でもスキーマは通す（開店準備で先にメニューを作れる）', () => {
+    // 一律で弾いていた頃は、スタッフ未登録の店主が候補ゼロのまま
+    // 「1名以上選択してください」と言われ続け、何をしても保存できなかった。
+    expect(serviceFormSchema.safeParse(base).success).toBe(true);
+  });
+
+  it('担当不要ならもちろん通す', () => {
+    expect(serviceFormSchema.safeParse({ ...base, requiresStaff: false }).success).toBe(true);
+  });
+
+  it('スタッフを選んでいれば通す', () => {
+    expect(serviceFormSchema.safeParse({ ...base, staffIds: ['s1'] }).success).toBe(true);
+  });
+
+  it('他の検証は従来どおり効く（セール価格・時間帯分割）', () => {
+    expect(serviceFormSchema.safeParse({ ...base, salePriceJpy: 5000 }).success).toBe(false);
+    expect(
+      serviceFormSchema.safeParse({ ...base, segments: [{ offsetMin: 0, durationMin: 30 }] }).success,
+    ).toBe(false);
+  });
+});
