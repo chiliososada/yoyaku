@@ -12,7 +12,9 @@ import {
   type ShopHomepageInput,
 } from '@/lib/validation/admin';
 import { updateHomepageAction } from '@/server/actions/admin-actions';
+import { useImageDrop, screenImageFiles } from './use-image-drop';
 import { Input } from '@/components/ui/input';
+import { cn } from '@/lib/utils';
 import { Field, Select, TextArea, CheckboxRow, FormError, SubmitBar } from './form-kit';
 
 const DEFAULT_BRAND = '#4f46e5';
@@ -295,11 +297,16 @@ function SingleImage({
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = '';
+  /** 選択・ドロップ共通の取り込み処理。 */
+  const accept = async (files: File[]) => {
+    const { accepted, error } = screenImageFiles(files);
+    setErr(error);
+    const file = accepted[0];
     if (!file) return;
-    setErr(null);
+    if (accepted.length > 1) {
+      // 1枚しか使わないので、黙って捨てずに何が採用されたか伝える
+      setErr(`複数選ばれたため、最初の1枚（${file.name}）を使用します。`);
+    }
     setBusy(true);
     try {
       onChange(await uploadImage(file, kind, shopId));
@@ -310,16 +317,45 @@ function SingleImage({
     }
   };
 
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = '';
+    if (files.length > 0) await accept(files);
+  };
+
+  const { over, handlers } = useImageDrop((files) => void accept(files), busy);
+
   return (
     <div className="grid gap-1.5">
       <span className="text-sm font-medium">{label}</span>
-      <div className={`relative overflow-hidden rounded-xl border bg-slate-50 ${aspect}`}>
+      {/* 枠ごとドロップ領域。クリックでもファイル選択できるよう label で包む。 */}
+      <label
+        {...handlers}
+        className={cn(
+          'relative block cursor-pointer overflow-hidden rounded-xl border bg-slate-50 transition-colors',
+          aspect,
+          over && 'border-2 border-dashed border-primary bg-primary/5',
+        )}
+      >
+        <input type="file" accept="image/*" className="hidden" onChange={onFile} disabled={busy} />
         {value ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img src={`/uploads/${value}`} alt={label} className="size-full object-cover" />
         ) : (
-          <div className="flex size-full items-center justify-center text-slate-300">
+          <div className="flex size-full flex-col items-center justify-center gap-1.5 text-slate-400">
             <ImagePlus className="size-8" />
+            <span className="px-4 text-center text-xs">
+              ここに画像をドラッグ＆ドロップ
+              <br />
+              またはクリックして選択
+            </span>
+          </div>
+        )}
+        {over && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-primary/10">
+            <span className="rounded-full bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground">
+              ここにドロップ
+            </span>
           </div>
         )}
         {busy && (
@@ -327,10 +363,10 @@ function SingleImage({
             <Loader2 className="size-6 animate-spin text-slate-500" />
           </div>
         )}
-      </div>
+      </label>
       <div className="flex items-center gap-3">
         <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border bg-white px-3 py-1.5 text-sm hover:bg-slate-50">
-          <ImagePlus className="size-4" /> 画像を選ぶ
+          <ImagePlus className="size-4" /> {value ? '画像を変更' : '画像を選ぶ'}
           <input type="file" accept="image/*" className="hidden" onChange={onFile} disabled={busy} />
         </label>
         {value && (
@@ -358,18 +394,22 @@ function GalleryImages({
   const [err, setErr] = useState<string | null>(null);
   const MAX = 12;
 
-  const onFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files ?? []);
-    e.target.value = '';
-    if (files.length === 0) return;
-    setErr(null);
+  const remaining = MAX - value.length;
+
+  /** 選択・ドロップ共通。上限超過は黙って切り捨てず件数を伝える。 */
+  const accept = async (files: File[]) => {
+    const { accepted, error } = screenImageFiles(files);
+    const notices: string[] = error ? [error] : [];
+    const use = accepted.slice(0, Math.max(0, remaining));
+    if (accepted.length > use.length) {
+      notices.push(`上限${MAX}枚のため、${accepted.length - use.length}枚は追加していません。`);
+    }
+    setErr(notices.length > 0 ? notices.join(' / ') : null);
+    if (use.length === 0) return;
     setBusy(true);
     try {
       const keys: string[] = [];
-      for (const f of files) {
-        if (value.length + keys.length >= MAX) break;
-        keys.push(await uploadImage(f, 'gallery', shopId));
-      }
+      for (const f of use) keys.push(await uploadImage(f, 'gallery', shopId));
       onChange([...value, ...keys].slice(0, MAX));
     } catch (e2) {
       setErr(e2 instanceof Error ? e2.message : 'アップロードに失敗しました。');
@@ -378,10 +418,24 @@ function GalleryImages({
     }
   };
 
+  const onFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    e.target.value = '';
+    if (files.length > 0) await accept(files);
+  };
+
+  const { over, handlers } = useImageDrop((files) => void accept(files), busy || remaining <= 0);
+
   return (
     <div className="grid gap-1.5">
       <span className="text-sm font-medium">ギャラリー（最大{MAX}枚）</span>
-      <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+      <div
+        {...handlers}
+        className={cn(
+          'grid grid-cols-3 gap-2 rounded-lg p-1 transition-colors sm:grid-cols-4',
+          over && 'bg-primary/5 ring-2 ring-dashed ring-primary',
+        )}
+      >
         {value.map((key) => (
           <div key={key} className="group relative aspect-square overflow-hidden rounded-lg border bg-slate-50">
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -396,13 +450,19 @@ function GalleryImages({
             </button>
           </div>
         ))}
-        {value.length < MAX && (
-          <label className="flex aspect-square cursor-pointer items-center justify-center rounded-lg border border-dashed bg-white text-slate-400 hover:bg-slate-50">
+        {remaining > 0 && (
+          <label className="flex aspect-square cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border border-dashed bg-white p-2 text-center text-slate-400 hover:bg-slate-50">
             {busy ? <Loader2 className="size-6 animate-spin" /> : <ImagePlus className="size-6" />}
+            <span className="text-[10px] leading-tight">ドラッグ＆ドロップ<br />または選択</span>
             <input type="file" accept="image/*" multiple className="hidden" onChange={onFiles} disabled={busy} />
           </label>
         )}
       </div>
+      <p className="text-xs text-muted-foreground">
+        {remaining > 0
+          ? `まとめてドロップできます（あと${remaining}枚）。`
+          : `上限の${MAX}枚に達しています。追加するには、いずれかを削除してください。`}
+      </p>
       {err && <p className="text-xs text-destructive">{err}</p>}
     </div>
   );
