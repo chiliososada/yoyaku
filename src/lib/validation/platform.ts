@@ -4,8 +4,10 @@
 import { z } from 'zod';
 import { passwordSchema } from './password';
 import { isReservedSlug } from '@/lib/shop-slug';
+import { shopSlugSchema } from './admin';
 
-const slug = z
+/** テナントの識別子。公開URLにはならないので店舗ほど厳しくしなくてよい。 */
+const tenantSlug = z
   .string()
   .trim()
   .regex(/^[a-z0-9-]+$/, '英小文字・数字・ハイフンのみ')
@@ -15,9 +17,11 @@ const slug = z
 
 export const createTenantSchema = z.object({
   tenantName: z.string().trim().min(1, '商家名を入力してください。').max(100),
-  tenantSlug: slug,
+  tenantSlug: tenantSlug,
   shopName: z.string().trim().min(1, '店舗名を入力してください。').max(100),
-  shopSlug: slug,
+  // 店舗設定の検証と同じ規則にする。ここだけ緩いと、末尾ハイフン等の
+  // 店舗が作れてしまい、そのオーナーは店舗設定を一切保存できなくなる。
+  shopSlug: shopSlugSchema,
   ownerName: z.string().trim().min(1, 'オーナー名を入力してください。').max(100),
   ownerEmail: z.string().trim().email('メール形式が不正です。'),
   ownerPassword: passwordSchema,

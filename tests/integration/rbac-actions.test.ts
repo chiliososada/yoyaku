@@ -24,6 +24,7 @@ const mockAuth = vi.mocked(auth);
 const createdTenants: string[] = [];
 let tenantId = '';
 let shopId = '';
+let shopSlug = '';
 let userId = '';
 
 function sessionFor(over: Partial<{
@@ -48,7 +49,10 @@ function sessionFor(over: Partial<{
   } as never;
 }
 
+// slug は必須項目。zod の検証は authz より先に走るので、ここが不正だと
+// 認可の allow/deny ではなく VALIDATION_ERROR を見てしまい、テストの意味が消える。
 const validInput = () => ({
+  slug: shopSlug,
   name: '更新テスト店舗', description: '', phone: '', email: '', postalCode: '', prefecture: '', city: '', address: '',
   status: 'PUBLISHED' as const, publicBookingEnabled: true, closeOnNationalHolidays: true, shopCapacity: 2,
 });
@@ -58,6 +62,7 @@ beforeAll(async () => {
   createdTenants.push(sc.tenantId);
   tenantId = sc.tenantId;
   shopId = sc.shopId;
+  shopSlug = sc.shopSlug;
   const u = await prisma.user.create({
     data: { email: `rbac-${Date.now()}@test.com`, name: 'RBAC Tester', tenantId, status: 'ACTIVE' },
     select: { id: true },

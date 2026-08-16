@@ -133,11 +133,20 @@ describe('サービス CRUD（segments含む）', () => {
   });
 });
 
+/** 店舗設定の必須項目をまとめた入力。slug 以外は既定値でよい。 */
+const baseSettings = (slug: string) => ({
+  slug,
+  name: 'テスト店舗', description: '', phone: '', email: '',
+  postalCode: '', prefecture: '', city: '', address: '',
+  status: 'PUBLISHED' as const, publicBookingEnabled: true, closeOnNationalHolidays: true, shopCapacity: 1,
+});
+
 describe('店舗設定 / 特別営業日 / 営業時間', () => {
   it('店舗設定を更新（shopCapacity は settings に保存）', async () => {
     const sc = await seedScenario({ staffCount: 1 });
     createdTenants.push(sc.tenantId);
     await svc.updateShopSettings(sc.tenantId, sc.shopId, {
+      slug: sc.shopSlug, // URLは変えない
       name: '更新後店舗', description: '', phone: '', email: '', postalCode: '', prefecture: '', city: '', address: '',
       status: 'PUBLISHED', publicBookingEnabled: true, closeOnNationalHolidays: false, shopCapacity: 7,
     });
@@ -145,6 +154,111 @@ describe('店舗設定 / 特別営業日 / 営業時間', () => {
     expect(shop?.name).toBe('更新後店舗');
     expect((shop?.settings as { shopCapacity: number }).shopCapacity).toBe(7);
     expect(shop?.closeOnNationalHolidays).toBe(false);
+  });
+
+  it('公開URL(slug)を変更できる。予約・スタッフ・メニューは同じ店舗のまま残る', async () => {
+    const sc = await seedScenario({ staffCount: 1 });
+    createdTenants.push(sc.tenantId);
+    const staffBefore = await prisma.staff.count({ where: { shopId: sc.shopId } });
+
+    await svc.updateShopSettings(sc.tenantId, sc.shopId, {
+      ...baseSettings(sc.shopSlug), slug: 'renamed-shinbashi',
+    });
+
+    const shop = await prisma.shop.findUnique({ where: { id: sc.shopId }, select: { slug: true } });
+    expect(shop?.slug).toBe('renamed-shinbashi');
+    // 店舗IDは変わらないので、ぶら下がっているものは全部そのまま
+    expect(await prisma.staff.count({ where: { shopId: sc.shopId } })).toBe(staffBefore);
+    expect(await prisma.service.count({ where: { shopId: sc.shopId } })).toBeGreaterThan(0);
+  });
+
+  it('URLを変えずに保存しても「使用中」にならない（自分自身を重複と数えない）', async () => {
+    const sc = await seedScenario({ staffCount: 1 });
+    createdTenants.push(sc.tenantId);
+    // 同じ slug のまま2回保存する。createShop の重複チェックをそのまま流用すると
+    // 自分自身を「使用中」と数えてしまい、URLを触っていないのに保存できなくなる（実測で再現済み）。
+    await svc.updateShopSettings(sc.tenantId, sc.shopId, baseSettings(sc.shopSlug));
+    await svc.updateShopSettings(sc.tenantId, sc.shopId, { ...baseSettings(sc.shopSlug), name: '2回目' });
+    const shop = await prisma.shop.findUnique({ where: { id: sc.shopId }, select: { slug: true, name: true } });
+    expect(shop?.slug).toBe(sc.shopSlug);
+    expect(shop?.name).toBe('2回目');
+  });
+
+  it('他店舗が使っているURLは拒否する（テナントをまたいでも一意）', async () => {
+    const a = await seedScenario({ staffCount: 1 });
+    const b = await seedScenario({ staffCount: 1 });
+    createdTenants.push(a.tenantId, b.tenantId);
+
+    await expect(
+      svc.updateShopSettings(a.tenantId, a.shopId, { ...baseSettings(a.shopSlug), slug: b.shopSlug }),
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
+
+    // 失敗しても元のURLは書き換わっていない
+    const shop = await prisma.shop.findUnique({ where: { id: a.shopId }, select: { slug: true } });
+    expect(shop?.slug).toBe(a.shopSlug);
+  });
+
+  it('手放したURLは別の店舗が取得できない（旧URLの客が別の店へ流れない）', async () => {
+    const a = await seedScenario({ staffCount: 1 });
+    const b = await seedScenario({ staffCount: 1 });
+    createdTenants.push(a.tenantId, b.tenantId);
+    const released = a.shopSlug;
+
+    // A店がURLを変更 → 旧URLが空く
+    await svc.updateShopSettings(a.tenantId, a.shopId, { ...baseSettings(released), slug: `${released}-honten` });
+
+    // 別テナントのB店がそれを拾おうとしても拒否される。
+    // 拾えてしまうと、A店のポスターのQRを読んだ客がB店に予約を入れ、
+    // 氏名・電話・メールがB店のテナントへ保存される。
+    await expect(
+      svc.updateShopSettings(b.tenantId, b.shopId, { ...baseSettings(b.shopSlug), slug: released }),
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
+
+    // 新規作成の経路からも取れない
+    await expect(
+      svc.createShop(b.tenantId, { name: '横取り店', slug: released, timezone: 'Asia/Tokyo' }),
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
+
+    // 旧URLはどの店舗も解決しない（404のまま）
+    expect(await prisma.shop.findFirst({ where: { slug: released } })).toBeNull();
+  });
+
+  it('自分が手放したURLには戻せる', async () => {
+    const sc = await seedScenario({ staffCount: 1 });
+    createdTenants.push(sc.tenantId);
+    const first = sc.shopSlug;
+
+    await svc.updateShopSettings(sc.tenantId, sc.shopId, { ...baseSettings(first), slug: `${first}-b` });
+    await svc.updateShopSettings(sc.tenantId, sc.shopId, { ...baseSettings(`${first}-b`), slug: first });
+
+    const shop = await prisma.shop.findUnique({ where: { id: sc.shopId }, select: { slug: true } });
+    expect(shop?.slug).toBe(first);
+    // 戻したURLは履歴から外れている（現URLと履歴の二重持ちを作らない）
+    expect(await prisma.shopSlugHistory.findFirst({ where: { slug: first } })).toBeNull();
+    // 手放した方は履歴に残る
+    expect(await prisma.shopSlugHistory.findFirst({ where: { slug: `${first}-b` } })).not.toBeNull();
+  });
+
+  it('URL重複で弾かれたとき、席数だけ書き換わった状態が残らない', async () => {
+    const a = await seedScenario({ staffCount: 1, shopCapacity: 1 });
+    const b = await seedScenario({ staffCount: 1 });
+    createdTenants.push(a.tenantId, b.tenantId);
+    const ruleBefore = await prisma.bookingCapacityRule.findFirstOrThrow({
+      where: { shopId: a.shopId, scope: 'SHOP', serviceId: null, staffId: null },
+      select: { maxConcurrent: true },
+    });
+
+    await expect(
+      svc.updateShopSettings(a.tenantId, a.shopId, {
+        ...baseSettings(a.shopSlug), slug: b.shopSlug, shopCapacity: ruleBefore.maxConcurrent + 5,
+      }),
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
+
+    const ruleAfter = await prisma.bookingCapacityRule.findFirstOrThrow({
+      where: { shopId: a.shopId, scope: 'SHOP', serviceId: null, staffId: null },
+      select: { maxConcurrent: true },
+    });
+    expect(ruleAfter.maxConcurrent).toBe(ruleBefore.maxConcurrent);
   });
 
   it('特別営業日の追加(upsert)と削除', async () => {

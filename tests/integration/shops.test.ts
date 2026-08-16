@@ -80,6 +80,7 @@ describe('店舗設定の同時受付上限が実際に効く', () => {
     expect(before.maxConcurrent).toBe(1);
 
     await svc.updateShopSettings(sc.tenantId, sc.shopId, {
+      slug: sc.shopSlug,
       name: 'テスト店', description: '', phone: '', email: '',
       postalCode: '', prefecture: '', city: '', address: '',
       status: 'PUBLISHED', publicBookingEnabled: true, closeOnNationalHolidays: false,

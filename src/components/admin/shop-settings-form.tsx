@@ -1,6 +1,7 @@
 'use client';
 
 import { useRef, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -8,10 +9,20 @@ import { Check, Loader2, MapPin, Undo2 } from 'lucide-react';
 import { shopSettingsSchema, type ShopSettingsInput } from '@/lib/validation/admin';
 import { updateShopSettingsAction } from '@/server/actions/admin-actions';
 import { Input } from '@/components/ui/input';
+import { cn } from '@/lib/utils';
 import { normalizePostalCode, formatPostalCode } from '@/lib/postal';
 import { Field, Select, TextArea, CheckboxRow, FormError, SubmitBar } from './form-kit';
 
-export function ShopSettingsForm({ shopId, initial }: { shopId: string; initial: ShopSettingsInput }) {
+export function ShopSettingsForm({
+  shopId,
+  initial,
+  baseUrl,
+}: {
+  shopId: string;
+  initial: ShopSettingsInput;
+  /** 例: https://yoyaku.arcs-ai.com（末尾スラッシュなし） */
+  baseUrl: string;
+}) {
   const router = useRouter();
   const [serverError, setServerError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -20,14 +31,32 @@ export function ShopSettingsForm({ shopId, initial }: { shopId: string; initial:
     handleSubmit,
     setValue,
     getValues,
+    watch,
+    reset,
+    setError,
+    setFocus,
     formState: { errors, isSubmitting },
   } = useForm<ShopSettingsInput>({
     resolver: zodResolver(shopSettingsSchema),
     defaultValues: initial,
   });
 
+  // 保存時に小文字化・前後空白除去が入るので、プレビューも同じ形に揃える
+  // （打った通りに出して保存後に変わると、何が起きたか分からない）。
+  const slugInput = watch('slug') ?? '';
+  const slugPreview = slugInput.trim().toLowerCase();
+  const slugChanged = slugPreview !== initial.slug;
+  const host = baseUrl.replace(/^https?:\/\//, '');
+  // 警告の強さは「保存時点で公開済みだったか」で決める。watch にすると
+  // 公開状態のプルダウンを触るたび警告文が入れ替わって落ち着かない。
+  const wasPublic = initial.status === 'PUBLISHED';
+
   // ---- 郵便番号から住所を自動入力 ----
-  const [lookup, setLookup] = useState<{ busy: boolean; note: string | null; error: string | null }>({
+  const [lookup, setLookup] = useState<{
+    busy: boolean;
+    note: string | null;
+    error: string | null;
+  }>({
     busy: false,
     note: null,
     error: null,
@@ -52,7 +81,10 @@ export function ShopSettingsForm({ shopId, initial }: { shopId: string; initial:
     setLookup({ busy: true, note: null, error: null });
     try {
       const res = await fetch(`/api/postal?code=${code}`);
-      const json = (await res.json()) as { address?: { prefecture: string; city: string; town: string }; error?: string };
+      const json = (await res.json()) as {
+        address?: { prefecture: string; city: string; town: string };
+        error?: string;
+      };
       if (!res.ok || !json.address) {
         setLookup({ busy: false, note: null, error: json.error ?? '住所を取得できませんでした。' });
         return;
@@ -76,7 +108,11 @@ export function ShopSettingsForm({ shopId, initial }: { shopId: string; initial:
         note: `${formatPostalCode(code)} → ${prefecture} ${city}${town ? ` ${town}` : ''} を入力しました。`,
       });
     } catch {
-      setLookup({ busy: false, note: null, error: '住所の自動入力に失敗しました。直接ご入力ください。' });
+      setLookup({
+        busy: false,
+        note: null,
+        error: '住所の自動入力に失敗しました。直接ご入力ください。',
+      });
     }
   };
 
@@ -96,9 +132,20 @@ export function ShopSettingsForm({ shopId, initial }: { shopId: string; initial:
     setSaved(false);
     const res = await updateShopSettingsAction(shopId, data);
     if (!res.ok) {
+      // URL重複は「その欄の話」なので、その欄に出してカーソルを送る。
+      // フォーム先頭のエラー表示だけだと、保存ボタン（最下部）からは画面外で見えず、
+      // 店主には「押しても何も起きない」ように見える。
+      if (res.code === 'CONFLICT') {
+        setError('slug', { type: 'server', message: res.error });
+        setFocus('slug');
+      }
       setServerError(res.error);
       return;
     }
+    // 保存された値をフォームへ戻す。zod が小文字化するため、`HairSalonTOKYO` と打つと
+    // DBは `hairsalontokyo` なのに入力欄は打った通りのまま残り、
+    // 画面が「開けないURL」を表示し続ける（それを名刺に書き写されうる）。
+    reset(data);
     setSaved(true);
     router.refresh();
   };
@@ -114,6 +161,74 @@ export function ShopSettingsForm({ shopId, initial }: { shopId: string; initial:
       <Field label="店舗名" required error={errors.name?.message}>
         <Input {...register('name')} />
       </Field>
+
+      {/* 公開URL。登録直後は `shop-4f091718` のような仮の値が入っているので、
+          お店の名前に変えられることが分かるよう、住所欄より上に置く。 */}
+      <Field
+        label="公開URL"
+        htmlFor="slug"
+        error={errors.slug?.message}
+        hint="ホームページと予約ページのアドレス。名刺・チラシに載せる文字列です（英小文字・数字・ハイフン）。"
+      >
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="shrink-0 text-sm text-muted-foreground">{host}/</span>
+          <Input
+            id="slug"
+            {...register('slug')}
+            placeholder="shinbashi"
+            spellCheck={false}
+            autoCapitalize="none"
+            autoCorrect="off"
+            className="w-56"
+          />
+        </div>
+      </Field>
+
+      {/* 変更したときだけ出す。常時出していると警告として読まれなくなる。 */}
+      {slugChanged && (
+        <div
+          className={cn(
+            'rounded-md border px-3 py-2.5 text-xs',
+            wasPublic
+              ? 'border-amber-300 bg-amber-50 text-amber-900'
+              : 'border-sky-200 bg-sky-50 text-sky-900',
+          )}
+        >
+          {wasPublic ? (
+            <>
+              <p className="font-semibold">URLを変えると、これまでのURLは開けなくなります。</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                <li>
+                  すでに配ったQRコード・ポスター・名刺の旧URLは<strong>つながらなくなります</strong>
+                  （自動転送はありません）。
+                </li>
+                <li>検索結果に出ていた旧ページも表示されなくなります。</li>
+                <li>
+                  変更したら
+                  <Link href="/admin/qr" className="mx-0.5 font-medium underline">
+                    予約QR・集客
+                  </Link>
+                  からQRコードとポスターを作り直してください。
+                </li>
+              </ul>
+            </>
+          ) : (
+            // まだ公開していない店に「配ったQRがつながらなくなる」と出すのは事実と違う。
+            // セルフサーブ登録直後の `shop-xxxxxxxx` を屋号に変えたい店主が、まさにこの状態。
+            <p>
+              この店舗はまだ公開していないので、URLを変えても影響はありません。公開する前の今のうちに決めておくのがおすすめです。
+            </p>
+          )}
+          <p className="mt-1.5">
+            変更前{' '}
+            <code className="rounded bg-white/70 px-1 py-0.5 font-mono">{`${host}/${initial.slug}`}</code>
+            <br />
+            変更後{' '}
+            <code className="rounded bg-white px-1 py-0.5 font-mono font-semibold">{`${host}/${slugPreview}`}</code>
+          </p>
+        </div>
+      )}
+
       <Field label="店舗紹介" error={errors.description?.message}>
         <TextArea {...register('description')} />
       </Field>
@@ -142,7 +257,8 @@ export function ShopSettingsForm({ shopId, initial }: { shopId: string; initial:
             id="postalCode"
             {...register('postalCode', {
               // 7桁そろった時点で自動で引く（入力途中では動かない）。
-              onChange: (e: React.ChangeEvent<HTMLInputElement>) => void applyPostal(e.target.value),
+              onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
+                void applyPostal(e.target.value),
             })}
             placeholder="1500002"
             inputMode="numeric"
@@ -162,7 +278,11 @@ export function ShopSettingsForm({ shopId, initial }: { shopId: string; initial:
             title="郵便番号から住所を入力"
             className="inline-flex h-10 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border bg-white px-3 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
           >
-            {lookup.busy ? <Loader2 className="size-4 animate-spin" /> : <MapPin className="size-4" />}
+            {lookup.busy ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <MapPin className="size-4" />
+            )}
             住所入力
           </button>
         </div>
@@ -188,7 +308,11 @@ export function ShopSettingsForm({ shopId, initial }: { shopId: string; initial:
           <MapPin className="size-3.5 shrink-0" />
           <span>{lookup.note}</span>
           {beforeFill.current && (
-            <button type="button" onClick={undoFill} className="inline-flex items-center gap-1 font-medium underline">
+            <button
+              type="button"
+              onClick={undoFill}
+              className="inline-flex items-center gap-1 font-medium underline"
+            >
               <Undo2 className="size-3" /> 元に戻す
             </button>
           )}
@@ -207,7 +331,11 @@ export function ShopSettingsForm({ shopId, initial }: { shopId: string; initial:
             <option value="CLOSED">休止</option>
           </Select>
         </Field>
-        <Field label="店舗同時受付上限" error={errors.shopCapacity?.message} hint="同一時間帯に店舗全体で受けられる予約数">
+        <Field
+          label="店舗同時受付上限"
+          error={errors.shopCapacity?.message}
+          hint="同一時間帯に店舗全体で受けられる予約数"
+        >
           <Input type="number" min={1} {...register('shopCapacity')} />
         </Field>
       </div>

@@ -49,7 +49,12 @@ export const serviceFormSchema = z
     // セール価格（任意）。空欄=セールなし。設定時は通常料金より安いこと。
     salePriceJpy: z.preprocess(
       (v) => (v === '' || v === undefined || v === null ? null : v),
-      z.coerce.number().int().min(1, 'セール価格は1円以上で入力してください。').max(10_000_000).nullable(),
+      z.coerce
+        .number()
+        .int()
+        .min(1, 'セール価格は1円以上で入力してください。')
+        .max(10_000_000)
+        .nullable(),
     ),
     capacity: z.coerce.number().int().min(1).max(100).default(1),
     requiresStaff: z.boolean().default(true),
@@ -134,16 +139,38 @@ export const staffLoginSchema = z.object({
 });
 export type StaffLoginInput = z.infer<typeof staffLoginSchema>;
 
+// ---- 店舗の公開URL（slug）----
+/**
+ * 公開URLになる文字列（`/{slug}` と `/book/{slug}`）。
+ *
+ * 作成時と変更時で同じ規則を使う。片方だけ緩いと
+ * 「作れたのに保存できない」「保存できたのにページが開けない」が起きる。
+ *
+ * 大文字は弾かずに小文字へ倒す。店主は屋号をそのまま「Shinbashi」と打つので、
+ * そこで赤字を出すより、URLとして正しい形に直して見せる方が親切。
+ * 直した結果は入力欄と URL プレビューに出るので、黙って変わることにはならない。
+ */
+export const shopSlugSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .min(2, 'URLは2文字以上で入力してください。')
+  .max(50, 'URLは50文字以内で入力してください。')
+  // 先頭・末尾のハイフンを禁止する。`-shinbashi-` のようなURLは打ち間違いに見え、
+  // 名刺やチラシに載せる文字列として体裁が悪い。
+  .regex(
+    /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/,
+    'URLに使えるのは英小文字・数字・ハイフンだけです（先頭と末尾は英字か数字）。',
+  )
+  .refine(
+    (s) => !isReservedSlug(s),
+    'このURLはシステムで予約されています。別の文字列をお選びください。',
+  );
+
 // ---- 店舗新規作成 ----
 export const shopCreateSchema = z.object({
   name: z.string().trim().min(1, '店舗名を入力してください。').max(100),
-  slug: z
-    .string()
-    .trim()
-    .regex(/^[a-z0-9-]+$/, '英小文字・数字・ハイフンのみ')
-    .min(2)
-    .max(50)
-    .refine((s) => !isReservedSlug(s), 'この名前は使用できません。別の名前をお選びください。'),
+  slug: shopSlugSchema,
   timezone: z.string().default('Asia/Tokyo'),
 });
 export type ShopCreateInput = z.infer<typeof shopCreateSchema>;
@@ -151,6 +178,9 @@ export type ShopCreateInput = z.infer<typeof shopCreateSchema>;
 // ---- 店舗設定 ----
 export const shopSettingsSchema = z.object({
   name: z.string().trim().min(1, '店舗名を入力してください。').max(100),
+  // 公開URL。セルフサーブ登録では `shop-4f091718` のような仮の値が発番されるため、
+  // 店主が自分の屋号に変えられないと、名刺やチラシに意味のない文字列を刷ることになる。
+  slug: shopSlugSchema,
   description: z.string().trim().max(2000).optional().or(z.literal('')),
   phone: optionalString,
   email: z.string().trim().email().optional().or(z.literal('')),
@@ -167,7 +197,13 @@ export type ShopSettingsInput = z.infer<typeof shopSettingsSchema>;
 
 // ---- 店舗ホームページ（専属HP・SEO公開ページ） ----
 /** JSON-LD 用のビジネス種別（schema.org 準拠の型のみ）。 */
-export const HP_BUSINESS_TYPES = ['HairSalon', 'BeautySalon', 'NailSalon', 'DaySpa', 'HealthAndBeautyBusiness'] as const;
+export const HP_BUSINESS_TYPES = [
+  'HairSalon',
+  'BeautySalon',
+  'NailSalon',
+  'DaySpa',
+  'HealthAndBeautyBusiness',
+] as const;
 export type HpBusinessType = (typeof HP_BUSINESS_TYPES)[number];
 export const HP_BUSINESS_TYPE_LABELS: Record<HpBusinessType, string> = {
   HairSalon: '美容室・ヘアサロン',
@@ -230,7 +266,9 @@ export const specialDaySchema = z
     reason: optionalString,
   })
   .refine(
-    (v) => v.type === 'CLOSED' || (v.openMinute != null && v.closeMinute != null && v.closeMinute > v.openMinute),
+    (v) =>
+      v.type === 'CLOSED' ||
+      (v.openMinute != null && v.closeMinute != null && v.closeMinute > v.openMinute),
     { message: '営業時間（開始 < 終了）を入力してください。', path: ['closeMinute'] },
   );
 export type SpecialDayInput = z.infer<typeof specialDaySchema>;
@@ -264,7 +302,8 @@ export const capacityRuleSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['leadTimeMinHours'],
-        message: '受付期間が当日のみのため、締切は24時間未満にしてください（現状では予約を受け付けられません）。',
+        message:
+          '受付期間が当日のみのため、締切は24時間未満にしてください（現状では予約を受け付けられません）。',
       });
     }
   });
@@ -278,50 +317,52 @@ export type CapacityRuleInput = z.infer<typeof capacityRuleSchema>;
  *    isWorkingDuring（1本の区間が施術全体を覆うことを要求）が継ぎ目をまたぐ長いメニューを弾く。
  *    店主から見ると「10-15と14-19を入れたのに、60分メニューだけ予約できない」ように見える。
  */
-export const staffScheduleSchema = z.object({
-  rows: z
-    .array(
-      z.object({
-        dayOfWeek: z.coerce.number().int().min(0).max(6),
-        startMinute: z.coerce.number().int().min(0).max(1440),
-        endMinute: z.coerce.number().int().min(0).max(1440),
-      }),
-    )
-    .max(50),
-}).superRefine((val, ctx) => {
-  val.rows.forEach((r, i) => {
-    if (r.endMinute <= r.startMinute) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['rows', i, 'endMinute'],
-        message: `${DOW_LABEL[r.dayOfWeek]}曜: 終了時刻は開始時刻より後にしてください。`,
-      });
-    }
-  });
-  const byDay = new Map<number, Array<{ i: number; s: number; e: number }>>();
-  val.rows.forEach((r, i) => {
-    if (r.endMinute <= r.startMinute) return;
-    const list = byDay.get(r.dayOfWeek) ?? [];
-    list.push({ i, s: r.startMinute, e: r.endMinute });
-    byDay.set(r.dayOfWeek, list);
-  });
-  for (const [dow, list] of byDay) {
-    list.sort((a, b) => a.s - b.s);
-    for (let k = 1; k < list.length; k++) {
-      const prev = list[k - 1]!;
-      const cur = list[k]!;
-      if (cur.s < prev.e) {
+export const staffScheduleSchema = z
+  .object({
+    rows: z
+      .array(
+        z.object({
+          dayOfWeek: z.coerce.number().int().min(0).max(6),
+          startMinute: z.coerce.number().int().min(0).max(1440),
+          endMinute: z.coerce.number().int().min(0).max(1440),
+        }),
+      )
+      .max(50),
+  })
+  .superRefine((val, ctx) => {
+    val.rows.forEach((r, i) => {
+      if (r.endMinute <= r.startMinute) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          path: ['rows', cur.i, 'startMinute'],
-          message:
-            `${DOW_LABEL[dow]}曜のシフトが重なっています（${hhmm(prev.s)}〜${hhmm(prev.e)} と ` +
-            `${hhmm(cur.s)}〜${hhmm(cur.e)}）。休憩を挟む場合は重ならないように分けてください。`,
+          path: ['rows', i, 'endMinute'],
+          message: `${DOW_LABEL[r.dayOfWeek]}曜: 終了時刻は開始時刻より後にしてください。`,
         });
       }
+    });
+    const byDay = new Map<number, Array<{ i: number; s: number; e: number }>>();
+    val.rows.forEach((r, i) => {
+      if (r.endMinute <= r.startMinute) return;
+      const list = byDay.get(r.dayOfWeek) ?? [];
+      list.push({ i, s: r.startMinute, e: r.endMinute });
+      byDay.set(r.dayOfWeek, list);
+    });
+    for (const [dow, list] of byDay) {
+      list.sort((a, b) => a.s - b.s);
+      for (let k = 1; k < list.length; k++) {
+        const prev = list[k - 1]!;
+        const cur = list[k]!;
+        if (cur.s < prev.e) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['rows', cur.i, 'startMinute'],
+            message:
+              `${DOW_LABEL[dow]}曜のシフトが重なっています（${hhmm(prev.s)}〜${hhmm(prev.e)} と ` +
+              `${hhmm(cur.s)}〜${hhmm(cur.e)}）。休憩を挟む場合は重ならないように分けてください。`,
+          });
+        }
+      }
     }
-  }
-});
+  });
 export type StaffScheduleInput = z.infer<typeof staffScheduleSchema>;
 
 export const staffOverrideSchema = z
@@ -332,15 +373,20 @@ export const staffOverrideSchema = z
     endMinute: z.coerce.number().int().min(0).max(1440).optional(),
     note: optionalString,
   })
-  .refine((v) => !v.isWorking || (v.startMinute != null && v.endMinute != null && v.endMinute > v.startMinute), {
-    message: '出勤時間（開始 < 終了）を入力してください。',
-    path: ['endMinute'],
-  });
+  .refine(
+    (v) =>
+      !v.isWorking || (v.startMinute != null && v.endMinute != null && v.endMinute > v.startMinute),
+    {
+      message: '出勤時間（開始 < 終了）を入力してください。',
+      path: ['endMinute'],
+    },
+  );
 export type StaffOverrideInput = z.infer<typeof staffOverrideSchema>;
 
 // ---- 営業時間（曜日ごと複数区間） ----
 const DOW_LABEL = ['日', '月', '火', '水', '木', '金', '土'] as const;
-const hhmm = (min: number) => `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
+const hhmm = (min: number) =>
+  `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
 
 export const businessHourRowSchema = z.object({
   dayOfWeek: z.coerce.number().int().min(0).max(6),
@@ -359,43 +405,45 @@ export const businessHourRowSchema = z.object({
  *     候補時刻を生成して連結するため、**顧客の予約画面に同じ時刻が2回並ぶ**。
  *     日付の○△×の空き数も水増しされる（予約の二重確保は別途DB制約が防ぐので起きない）。
  */
-export const businessHoursSchema = z.object({
-  rows: z.array(businessHourRowSchema).max(50),
-}).superRefine((val, ctx) => {
-  val.rows.forEach((r, i) => {
-    if (r.closeMinute <= r.openMinute) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['rows', i, 'closeMinute'],
-        message: `${DOW_LABEL[r.dayOfWeek]}曜: 終了時刻は開始時刻より後にしてください。`,
-      });
-    }
-  });
-
-  // 曜日ごとに開始順へ並べ、隣接行の重なりを検出する
-  const byDay = new Map<number, Array<{ i: number; open: number; close: number }>>();
-  val.rows.forEach((r, i) => {
-    if (r.closeMinute <= r.openMinute) return; // 上で別途エラー済み
-    const list = byDay.get(r.dayOfWeek) ?? [];
-    list.push({ i, open: r.openMinute, close: r.closeMinute });
-    byDay.set(r.dayOfWeek, list);
-  });
-  for (const [dow, list] of byDay) {
-    list.sort((a, b) => a.open - b.open);
-    for (let k = 1; k < list.length; k++) {
-      const prev = list[k - 1]!;
-      const cur = list[k]!;
-      // 半開区間として扱う: 13:00終了 と 13:00開始 は重なりではない（連続営業）
-      if (cur.open < prev.close) {
+export const businessHoursSchema = z
+  .object({
+    rows: z.array(businessHourRowSchema).max(50),
+  })
+  .superRefine((val, ctx) => {
+    val.rows.forEach((r, i) => {
+      if (r.closeMinute <= r.openMinute) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          path: ['rows', cur.i, 'openMinute'],
-          message:
-            `${DOW_LABEL[dow]}曜の時間帯が重なっています（${hhmm(prev.open)}〜${hhmm(prev.close)} と ` +
-            `${hhmm(cur.open)}〜${hhmm(cur.close)}）。昼休みを設ける場合は重ならないように分けてください。`,
+          path: ['rows', i, 'closeMinute'],
+          message: `${DOW_LABEL[r.dayOfWeek]}曜: 終了時刻は開始時刻より後にしてください。`,
         });
       }
+    });
+
+    // 曜日ごとに開始順へ並べ、隣接行の重なりを検出する
+    const byDay = new Map<number, Array<{ i: number; open: number; close: number }>>();
+    val.rows.forEach((r, i) => {
+      if (r.closeMinute <= r.openMinute) return; // 上で別途エラー済み
+      const list = byDay.get(r.dayOfWeek) ?? [];
+      list.push({ i, open: r.openMinute, close: r.closeMinute });
+      byDay.set(r.dayOfWeek, list);
+    });
+    for (const [dow, list] of byDay) {
+      list.sort((a, b) => a.open - b.open);
+      for (let k = 1; k < list.length; k++) {
+        const prev = list[k - 1]!;
+        const cur = list[k]!;
+        // 半開区間として扱う: 13:00終了 と 13:00開始 は重なりではない（連続営業）
+        if (cur.open < prev.close) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['rows', cur.i, 'openMinute'],
+            message:
+              `${DOW_LABEL[dow]}曜の時間帯が重なっています（${hhmm(prev.open)}〜${hhmm(prev.close)} と ` +
+              `${hhmm(cur.open)}〜${hhmm(cur.close)}）。昼休みを設ける場合は重ならないように分けてください。`,
+          });
+        }
+      }
     }
-  }
-});
+  });
 export type BusinessHoursInput = z.infer<typeof businessHoursSchema>;

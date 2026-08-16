@@ -22,6 +22,8 @@ export interface ScenarioOptions {
 export interface Scenario {
   tenantId: string;
   shopId: string;
+  /** 店舗の公開URL。店舗設定の更新はこの値を要求するため、テストから参照できるようにする。 */
+  shopSlug: string;
   serviceId: string;
   staffIds: string[];
   timezone: string;
@@ -54,7 +56,9 @@ export async function seedScenario(opts: ScenarioOptions = {}): Promise<Scenario
   const shop = await prisma.shop.create({
     data: {
       tenantId: tenant.id,
-      slug: `test-shop-${suffix}`,
+      // suffix には `_` が入るが、slug は英小文字・数字・ハイフンのみ（validation/admin.ts）。
+      // フィクスチャが本番で作れない値だと、店舗設定の更新テストがそこで落ちる。
+      slug: `test-shop-${suffix}`.replace(/_/g, '-'),
       name: `Test Shop ${suffix}`,
       timezone: 'Asia/Tokyo',
       status: 'PUBLISHED',
@@ -147,6 +151,7 @@ export async function seedScenario(opts: ScenarioOptions = {}): Promise<Scenario
   return {
     tenantId: tenant.id,
     shopId: shop.id,
+    shopSlug: shop.slug,
     serviceId: service.id,
     staffIds,
     timezone: 'Asia/Tokyo',

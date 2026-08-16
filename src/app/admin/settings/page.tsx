@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { env } from '@/lib/env';
 import { requireTenantUser } from '@/server/auth/authorize';
 import { getPrimaryShop, getShopConfig } from '@/server/services/merchant-service';
 import { PageHeader } from '@/components/admin/ui';
@@ -38,7 +39,10 @@ export default async function SettingsPage() {
       <ShopSettingsForm
         key={s.id}
         shopId={s.id}
+        // URLプレビューに使う。env はサーバー専用なのでここで文字列にして渡す。
+        baseUrl={env.APP_BASE_URL.replace(/\/$/, '')}
         initial={{
+          slug: s.slug,
           name: s.name,
           description: s.description ?? '',
           phone: s.phone ?? '',

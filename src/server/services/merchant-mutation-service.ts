@@ -7,6 +7,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { Errors } from '@/lib/errors';
 import { nowUtc } from '@/lib/time';
+import { assertShopSlugAvailable, recordSlugChange, SLUG_TAKEN_MESSAGE } from './shop-slug-guard';
 import type {
   StaffFormInput,
   ServiceFormInput,
@@ -20,7 +21,10 @@ import type {
 } from '@/lib/validation/admin';
 
 async function assertShopInTenant(tenantId: string, shopId: string) {
-  const shop = await prisma.shop.findFirst({ where: { id: shopId, tenantId, deletedAt: null }, select: { id: true } });
+  const shop = await prisma.shop.findFirst({
+    where: { id: shopId, tenantId, deletedAt: null },
+    select: { id: true },
+  });
   if (!shop) throw Errors.notFound('店舗が見つかりません。');
 }
 
@@ -46,7 +50,9 @@ async function assertStaffQuota(tenantId: string, shopId: string): Promise<void>
   // 在籍中（ACTIVE）のみを数える。退職者を INACTIVE で残す運用は普通なので、
   // それを枠に含めると「15名プランなのに10名しか雇えない」となり、
   // 実際には不要な上位プランへの変更を迫る誤った案内になる。
-  const current = await prisma.staff.count({ where: { shopId, deletedAt: null, status: 'ACTIVE' } });
+  const current = await prisma.staff.count({
+    where: { shopId, deletedAt: null, status: 'ACTIVE' },
+  });
   if (current >= max) {
     throw Errors.conflict(
       'CONFLICT',
@@ -112,9 +118,17 @@ export async function createStaff(tenantId: string, shopId: string, input: Staff
   });
 }
 
-export async function updateStaff(tenantId: string, shopId: string, staffId: string, input: StaffFormInput) {
+export async function updateStaff(
+  tenantId: string,
+  shopId: string,
+  staffId: string,
+  input: StaffFormInput,
+) {
   // shopId を WHERE に含めることで、店舗越境（別店舗のスタッフID）を NOT_FOUND で弾く。
-  const existing = await prisma.staff.findFirst({ where: { id: staffId, tenantId, shopId, deletedAt: null }, select: { id: true, shopId: true, status: true } });
+  const existing = await prisma.staff.findFirst({
+    where: { id: staffId, tenantId, shopId, deletedAt: null },
+    select: { id: true, shopId: true, status: true },
+  });
   if (!existing) throw Errors.notFound('スタッフが見つかりません。');
   // 停止中 → 在籍 への復帰は枠を1つ消費する。ここを見ないと
   // 「INACTIVE で大量に作ってから一括で ACTIVE に戻す」で上限を回避できてしまう。
@@ -160,10 +174,16 @@ export async function softDeleteStaff(tenantId: string, shopId: string, staffId:
   });
   if (!existing) throw Errors.notFound('スタッフが見つかりません。');
   await prisma.$transaction(async (tx) => {
-    await tx.staff.update({ where: { id: staffId }, data: { deletedAt: nowUtc(), status: 'INACTIVE', isBookable: false } });
+    await tx.staff.update({
+      where: { id: staffId },
+      data: { deletedAt: nowUtc(), status: 'INACTIVE', isBookable: false },
+    });
     // 削除したスタッフのログインも失効させる（放置すると退職者が最大7日ログインできてしまう）。
     if (existing.userId) {
-      await tx.user.update({ where: { id: existing.userId }, data: { status: 'SUSPENDED', sessionEpoch: { increment: 1 } } });
+      await tx.user.update({
+        where: { id: existing.userId },
+        data: { status: 'SUSPENDED', sessionEpoch: { increment: 1 } },
+      });
     }
   });
 }
@@ -172,18 +192,30 @@ export async function softDeleteStaff(tenantId: string, shopId: string, staffId:
  * スタッフのログインアカウントを作成/更新（オーナーがメール+パスワードを設定）。
  * User を作成/更新し、Staff.userId で紐付け、SHOP_STAFF の Membership（当該店舗）を付与する。
  */
-export async function setStaffLogin(tenantId: string, shopId: string, staffId: string, email: string, password: string) {
+export async function setStaffLogin(
+  tenantId: string,
+  shopId: string,
+  staffId: string,
+  email: string,
+  password: string,
+) {
   const staff = await prisma.staff.findFirst({
     where: { id: staffId, tenantId, shopId, deletedAt: null },
     select: { id: true, shopId: true, userId: true, name: true },
   });
   if (!staff) throw Errors.notFound('スタッフが見つかりません。');
 
-  const emailOwner = await prisma.user.findUnique({ where: { email: email.trim() }, select: { id: true } });
+  const emailOwner = await prisma.user.findUnique({
+    where: { email: email.trim() },
+    select: { id: true },
+  });
   if (emailOwner && emailOwner.id !== staff.userId) {
     throw Errors.conflict('CONFLICT', 'このメールアドレスは既に使われています。');
   }
-  const role = await prisma.role.findFirst({ where: { code: 'SHOP_STAFF', tenantId: null }, select: { id: true } });
+  const role = await prisma.role.findFirst({
+    where: { code: 'SHOP_STAFF', tenantId: null },
+    select: { id: true },
+  });
   if (!role) throw Errors.internal(new Error('SHOP_STAFF role missing (run seed)'));
   const passwordHash = bcrypt.hashSync(password, 10);
 
@@ -191,28 +223,46 @@ export async function setStaffLogin(tenantId: string, shopId: string, staffId: s
     let userId = staff.userId;
     if (userId) {
       // 多層防御: 紐付く User が別テナント所属なら再テナント化・パスワード上書きを拒否。
-      const linked = await tx.user.findUnique({ where: { id: userId }, select: { tenantId: true } });
+      const linked = await tx.user.findUnique({
+        where: { id: userId },
+        select: { tenantId: true },
+      });
       if (linked && linked.tenantId && linked.tenantId !== tenantId) {
         throw Errors.conflict('CONFLICT', 'このスタッフは別テナントのアカウントに紐付いています。');
       }
-      await tx.user.update({ where: { id: userId }, data: { email: email.trim(), passwordHash, tenantId, status: 'ACTIVE' } });
+      await tx.user.update({
+        where: { id: userId },
+        data: { email: email.trim(), passwordHash, tenantId, status: 'ACTIVE' },
+      });
     } else {
-      const user = await tx.user.create({ data: { email: email.trim(), name: staff.name, passwordHash, tenantId, status: 'ACTIVE' } });
+      const user = await tx.user.create({
+        data: { email: email.trim(), name: staff.name, passwordHash, tenantId, status: 'ACTIVE' },
+      });
       userId = user.id;
       await tx.staff.update({ where: { id: staffId }, data: { userId } });
     }
-    const existing = await tx.membership.findFirst({ where: { userId, roleId: role.id, shopId: staff.shopId }, select: { id: true } });
-    if (!existing) await tx.membership.create({ data: { userId, roleId: role.id, shopId: staff.shopId } });
+    const existing = await tx.membership.findFirst({
+      where: { userId, roleId: role.id, shopId: staff.shopId },
+      select: { id: true },
+    });
+    if (!existing)
+      await tx.membership.create({ data: { userId, roleId: role.id, shopId: staff.shopId } });
     return { userId, email: email.trim() };
   });
 }
 
 /** スタッフのログインを無効化（User を停止）。再有効化は setStaffLogin で。 */
 export async function disableStaffLogin(tenantId: string, shopId: string, staffId: string) {
-  const staff = await prisma.staff.findFirst({ where: { id: staffId, tenantId, shopId, deletedAt: null }, select: { userId: true } });
+  const staff = await prisma.staff.findFirst({
+    where: { id: staffId, tenantId, shopId, deletedAt: null },
+    select: { userId: true },
+  });
   if (!staff?.userId) return;
   // sessionEpoch を進めて既存 JWT を即時失効（無効化後も最大7日ログインできてしまう穴を塞ぐ）。
-  await prisma.user.update({ where: { id: staff.userId }, data: { status: 'SUSPENDED', sessionEpoch: { increment: 1 } } });
+  await prisma.user.update({
+    where: { id: staff.userId },
+    data: { status: 'SUSPENDED', sessionEpoch: { increment: 1 } },
+  });
 }
 
 // ---- サービス ----
@@ -318,7 +368,12 @@ async function syncServiceOptions(
     if (o.id && existing.some((e) => e.id === o.id)) {
       await tx.serviceOption.update({
         where: { id: o.id },
-        data: { name: o.name, priceJpy: o.priceJpy, extraDurationMin: o.extraDurationMin, sortOrder: i },
+        data: {
+          name: o.name,
+          priceJpy: o.priceJpy,
+          extraDurationMin: o.extraDurationMin,
+          sortOrder: i,
+        },
       });
     } else {
       await tx.serviceOption.create({
@@ -335,8 +390,16 @@ async function syncServiceOptions(
   }
 }
 
-export async function updateService(tenantId: string, shopId: string, serviceId: string, input: ServiceFormInput) {
-  const existing = await prisma.service.findFirst({ where: { id: serviceId, tenantId, shopId, deletedAt: null }, select: { id: true, shopId: true } });
+export async function updateService(
+  tenantId: string,
+  shopId: string,
+  serviceId: string,
+  input: ServiceFormInput,
+) {
+  const existing = await prisma.service.findFirst({
+    where: { id: serviceId, tenantId, shopId, deletedAt: null },
+    select: { id: true, shopId: true },
+  });
   if (!existing) throw Errors.notFound('メニューが見つかりません。');
   await assertStaffSelectionUsable(shopId, input);
   return prisma.$transaction(async (tx) => {
@@ -378,16 +441,22 @@ export async function updateService(tenantId: string, shopId: string, serviceId:
 }
 
 export async function softDeleteService(tenantId: string, shopId: string, serviceId: string) {
-  const existing = await prisma.service.findFirst({ where: { id: serviceId, tenantId, shopId, deletedAt: null }, select: { id: true } });
+  const existing = await prisma.service.findFirst({
+    where: { id: serviceId, tenantId, shopId, deletedAt: null },
+    select: { id: true },
+  });
   if (!existing) throw Errors.notFound('メニューが見つかりません。');
-  await prisma.service.update({ where: { id: serviceId }, data: { deletedAt: nowUtc(), isActive: false } });
+  await prisma.service.update({
+    where: { id: serviceId },
+    data: { deletedAt: nowUtc(), isActive: false },
+  });
 }
 
 // ---- 店舗（複数店舗対応: 新規追加）----
 /** テナントに店舗を追加。プラン上限・slug 一意を検証し、既定の営業時間/容量ルールも作成。 */
 export async function createShop(tenantId: string, input: ShopCreateInput) {
-  const slugTaken = await prisma.shop.findFirst({ where: { slug: input.slug }, select: { id: true } });
-  if (slugTaken) throw Errors.conflict('CONFLICT', '店舗slugは既に使用されています。');
+  // 現に使われているURLだけでなく、過去に別店舗が手放したURLも拒否する。
+  await assertShopSlugAvailable(prisma, input.slug);
 
   const tenant = await prisma.tenant.findUnique({
     where: { id: tenantId },
@@ -396,7 +465,10 @@ export async function createShop(tenantId: string, input: ShopCreateInput) {
   const maxShops = tenant?.plan?.maxShops ?? 1;
   const current = await prisma.shop.count({ where: { tenantId, deletedAt: null } });
   if (current >= maxShops) {
-    throw Errors.conflict('CONFLICT', `ご契約プランの店舗数上限（${maxShops}店舗）に達しています。`);
+    throw Errors.conflict(
+      'CONFLICT',
+      `ご契約プランの店舗数上限（${maxShops}店舗）に達しています。`,
+    );
   }
 
   try {
@@ -414,10 +486,25 @@ export async function createShop(tenantId: string, input: ShopCreateInput) {
         },
       });
       await tx.businessHours.createMany({
-        data: [1, 2, 3, 4, 5, 6].map((dow) => ({ tenantId, shopId: shop.id, dayOfWeek: dow, openMinute: 600, closeMinute: 1140 })),
+        data: [1, 2, 3, 4, 5, 6].map((dow) => ({
+          tenantId,
+          shopId: shop.id,
+          dayOfWeek: dow,
+          openMinute: 600,
+          closeMinute: 1140,
+        })),
       });
       await tx.bookingCapacityRule.create({
-        data: { tenantId, shopId: shop.id, scope: 'SHOP', maxConcurrent: 1, slotIntervalMin: 30, bookingWindowDays: 30, leadTimeMinHours: 2, cancellationDeadlineHours: 24 },
+        data: {
+          tenantId,
+          shopId: shop.id,
+          scope: 'SHOP',
+          maxConcurrent: 1,
+          slotIntervalMin: 30,
+          bookingWindowDays: 30,
+          leadTimeMinHours: 2,
+          cancellationDeadlineHours: 24,
+        },
       });
       return shop;
     });
@@ -431,36 +518,69 @@ export async function createShop(tenantId: string, input: ShopCreateInput) {
 }
 
 // ---- 店舗設定 ----
-export async function updateShopSettings(tenantId: string, shopId: string, input: ShopSettingsInput) {
-  const existing = await prisma.shop.findFirst({ where: { id: shopId, tenantId, deletedAt: null }, select: { id: true, settings: true } });
+export async function updateShopSettings(
+  tenantId: string,
+  shopId: string,
+  input: ShopSettingsInput,
+) {
+  const existing = await prisma.shop.findFirst({
+    where: { id: shopId, tenantId, deletedAt: null },
+    select: { id: true, slug: true, settings: true },
+  });
   if (!existing) throw Errors.notFound('店舗が見つかりません。');
-  const settings = { ...((existing.settings as Record<string, unknown>) ?? {}), shopCapacity: input.shopCapacity };
-  // 「店舗同時受付上限」の唯一の正は SHOP スコープの容量ルール。
-  // 以前は settings JSON にしか書いておらず、resolveBookingRules は
-  // `shopRule?.maxConcurrent ?? fallback` で必ず先に SHOP ルール（新規店舗は常に 1）を拾うため、
-  // 店主が席数を増やしても**保存はできるのに1件しか入らない**状態だった。
-  // 予約ルール画面と同じ行を書き換え、どちらの画面から編集しても一致させる。
-  await prisma.bookingCapacityRule.updateMany({
-    where: { shopId, scope: 'SHOP', serviceId: null, staffId: null },
-    data: { maxConcurrent: input.shopCapacity },
-  });
-  return prisma.shop.update({
-    where: { id: shopId },
-    data: {
-      name: input.name,
-      description: input.description || null,
-      phone: input.phone || null,
-      email: input.email || null,
-      postalCode: input.postalCode || null,
-      prefecture: input.prefecture || null,
-      city: input.city || null,
-      address: input.address || null,
-      status: input.status,
-      publicBookingEnabled: input.publicBookingEnabled,
-      closeOnNationalHolidays: input.closeOnNationalHolidays,
-      settings,
-    },
-  });
+
+  // 公開URLの確認。**自分自身を除外する**のを忘れると、URLを変えずに
+  // 住所だけ直して保存した店主に「このURLは使用されています」と出て、二度と保存できなくなる。
+  // 実際に変更するときだけ引く（毎回の保存で2クエリ増やさない）。
+  const renaming = input.slug !== existing.slug;
+  if (renaming) await assertShopSlugAvailable(prisma, input.slug, shopId);
+
+  const settings = {
+    ...((existing.settings as Record<string, unknown>) ?? {}),
+    shopCapacity: input.shopCapacity,
+  };
+
+  // 容量ルール・URL履歴・店舗行はまとめて更新する。
+  // 別々に走らせると、URL重複で弾かれたときに席数だけ書き換わった状態が残る。
+  try {
+    return await prisma.$transaction(async (tx) => {
+      // 「店舗同時受付上限」の唯一の正は SHOP スコープの容量ルール。
+      // 以前は settings JSON にしか書いておらず、resolveBookingRules は
+      // `shopRule?.maxConcurrent ?? fallback` で必ず先に SHOP ルール（新規店舗は常に 1）を拾うため、
+      // 店主が席数を増やしても**保存はできるのに1件しか入らない**状態だった。
+      // 予約ルール画面と同じ行を書き換え、どちらの画面から編集しても一致させる。
+      await tx.bookingCapacityRule.updateMany({
+        where: { shopId, scope: 'SHOP', serviceId: null, staffId: null },
+        data: { maxConcurrent: input.shopCapacity },
+      });
+      if (renaming) await recordSlugChange(tx, shopId, existing.slug, input.slug);
+      return tx.shop.update({
+        where: { id: shopId },
+        data: {
+          slug: input.slug,
+          name: input.name,
+          description: input.description || null,
+          phone: input.phone || null,
+          email: input.email || null,
+          postalCode: input.postalCode || null,
+          prefecture: input.prefecture || null,
+          city: input.city || null,
+          address: input.address || null,
+          status: input.status,
+          publicBookingEnabled: input.publicBookingEnabled,
+          closeOnNationalHolidays: input.closeOnNationalHolidays,
+          settings,
+        },
+      });
+    });
+  } catch (e) {
+    // 事前チェックと update の間に他店舗が同じURLを取る競合（shops_slug_key /
+    // shop_slug_history_slug_key）。生の P2002 は画面に出しても意味が通じない。
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+      throw Errors.conflict('CONFLICT', SLUG_TAKEN_MESSAGE);
+    }
+    throw e;
+  }
 }
 
 // ---- 特別営業日 ----
@@ -533,7 +653,8 @@ export async function addSpecialDay(tenantId: string, shopId: string, input: Spe
   const affectedBookings =
     input.type === 'CLOSED' ? await countActiveBookingsOn(shopId, input.date) : 0;
   // 臨時営業・時間変更なのに出勤者ゼロ＝客からは全枠「×」に見える
-  const noStaffOnDuty = input.type === 'CLOSED' ? false : !(await hasStaffOnDuty(shopId, input.date));
+  const noStaffOnDuty =
+    input.type === 'CLOSED' ? false : !(await hasStaffOnDuty(shopId, input.date));
   await prisma.specialBusinessDay.upsert({
     where: { shopId_date: { shopId, date: dateOnly(input.date) } },
     update: {
@@ -556,14 +677,25 @@ export async function addSpecialDay(tenantId: string, shopId: string, input: Spe
 }
 
 export async function deleteSpecialDay(tenantId: string, shopId: string, id: string) {
-  const existing = await prisma.specialBusinessDay.findFirst({ where: { id, shopId, tenantId }, select: { id: true } });
+  const existing = await prisma.specialBusinessDay.findFirst({
+    where: { id, shopId, tenantId },
+    select: { id: true },
+  });
   if (!existing) throw Errors.notFound('対象が見つかりません。');
   await prisma.specialBusinessDay.delete({ where: { id } });
 }
 
 // ---- 容量ルール ----
-export async function updateCapacityRule(tenantId: string, shopId: string, ruleId: string, input: CapacityRuleInput) {
-  const existing = await prisma.bookingCapacityRule.findFirst({ where: { id: ruleId, tenantId, shopId }, select: { id: true } });
+export async function updateCapacityRule(
+  tenantId: string,
+  shopId: string,
+  ruleId: string,
+  input: CapacityRuleInput,
+) {
+  const existing = await prisma.bookingCapacityRule.findFirst({
+    where: { id: ruleId, tenantId, shopId },
+    select: { id: true },
+  });
   if (!existing) throw Errors.notFound('予約ルールが見つかりません。');
   return prisma.bookingCapacityRule.update({
     where: { id: ruleId },
@@ -579,12 +711,20 @@ export async function updateCapacityRule(tenantId: string, shopId: string, ruleI
 
 // ---- スタッフシフト ----
 async function assertStaffInShop(tenantId: string, shopId: string, staffId: string): Promise<void> {
-  const staff = await prisma.staff.findFirst({ where: { id: staffId, tenantId, shopId, deletedAt: null }, select: { id: true } });
+  const staff = await prisma.staff.findFirst({
+    where: { id: staffId, tenantId, shopId, deletedAt: null },
+    select: { id: true },
+  });
   if (!staff) throw Errors.notFound('スタッフが見つかりません。');
 }
 
 /** スタッフの曜日シフト（RECURRING）を全置換。 */
-export async function replaceStaffRecurringSchedule(tenantId: string, shopId: string, staffId: string, input: StaffScheduleInput) {
+export async function replaceStaffRecurringSchedule(
+  tenantId: string,
+  shopId: string,
+  staffId: string,
+  input: StaffScheduleInput,
+) {
   await assertStaffInShop(tenantId, shopId, staffId);
   // 黙って捨てない（API 直叩き対策）。捨てるとその曜日の出勤が理由不明で消える。
   const bad = input.rows.find((r) => r.endMinute <= r.startMinute);
@@ -599,8 +739,14 @@ export async function replaceStaffRecurringSchedule(tenantId: string, shopId: st
     if (rows.length > 0) {
       await tx.staffSchedule.createMany({
         data: rows.map((r) => ({
-          tenantId, shopId, staffId, type: 'RECURRING' as const,
-          dayOfWeek: r.dayOfWeek, startMinute: r.startMinute, endMinute: r.endMinute, isWorking: true,
+          tenantId,
+          shopId,
+          staffId,
+          type: 'RECURRING' as const,
+          dayOfWeek: r.dayOfWeek,
+          startMinute: r.startMinute,
+          endMinute: r.endMinute,
+          isWorking: true,
         })),
       });
     }
@@ -608,16 +754,27 @@ export async function replaceStaffRecurringSchedule(tenantId: string, shopId: st
 }
 
 /** 特定日の出勤/欠勤（OVERRIDE）を追加（同日があれば置換）。 */
-export async function addStaffOverride(tenantId: string, shopId: string, staffId: string, input: StaffOverrideInput) {
+export async function addStaffOverride(
+  tenantId: string,
+  shopId: string,
+  staffId: string,
+  input: StaffOverrideInput,
+) {
   await assertStaffInShop(tenantId, shopId, staffId);
   // 欠勤にする日にその人の予約が入っていることを店主へ知らせる（自動キャンセルはしない）
-  const affectedBookings = input.isWorking ? 0 : await countActiveBookingsOn(shopId, input.date, { staffId });
+  const affectedBookings = input.isWorking
+    ? 0
+    : await countActiveBookingsOn(shopId, input.date, { staffId });
   const date = dateOnly(input.date);
   await prisma.$transaction(async (tx) => {
     await tx.staffSchedule.deleteMany({ where: { staffId, type: 'OVERRIDE', date } });
     return tx.staffSchedule.create({
       data: {
-        tenantId, shopId, staffId, type: 'OVERRIDE', date,
+        tenantId,
+        shopId,
+        staffId,
+        type: 'OVERRIDE',
+        date,
         isWorking: input.isWorking,
         startMinute: input.isWorking ? (input.startMinute ?? null) : null,
         endMinute: input.isWorking ? (input.endMinute ?? null) : null,
@@ -629,7 +786,10 @@ export async function addStaffOverride(tenantId: string, shopId: string, staffId
 }
 
 export async function deleteStaffOverride(tenantId: string, shopId: string, scheduleId: string) {
-  const existing = await prisma.staffSchedule.findFirst({ where: { id: scheduleId, tenantId, shopId, type: 'OVERRIDE' }, select: { id: true } });
+  const existing = await prisma.staffSchedule.findFirst({
+    where: { id: scheduleId, tenantId, shopId, type: 'OVERRIDE' },
+    select: { id: true },
+  });
   if (!existing) throw Errors.notFound('対象が見つかりません。');
   await prisma.staffSchedule.delete({ where: { id: scheduleId } });
 }
@@ -664,7 +824,11 @@ export async function updateCustomerNote(
 }
 
 // ---- 営業時間（全置換） ----
-export async function replaceBusinessHours(tenantId: string, shopId: string, input: BusinessHoursInput) {
+export async function replaceBusinessHours(
+  tenantId: string,
+  shopId: string,
+  input: BusinessHoursInput,
+) {
   await assertShopInTenant(tenantId, shopId);
   // 不正行を黙って捨てない（API 直叩き対策）。捨てると保存は成功したように見えて
   // その曜日だけが理由不明で定休になり、店主が原因に辿り着けない。
@@ -679,7 +843,13 @@ export async function replaceBusinessHours(tenantId: string, shopId: string, inp
     await tx.businessHours.deleteMany({ where: { shopId } });
     if (rows.length > 0) {
       await tx.businessHours.createMany({
-        data: rows.map((r) => ({ tenantId, shopId, dayOfWeek: r.dayOfWeek, openMinute: r.openMinute, closeMinute: r.closeMinute })),
+        data: rows.map((r) => ({
+          tenantId,
+          shopId,
+          dayOfWeek: r.dayOfWeek,
+          openMinute: r.openMinute,
+          closeMinute: r.closeMinute,
+        })),
       });
     }
   });
