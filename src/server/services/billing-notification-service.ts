@@ -14,18 +14,12 @@ import { prisma } from '@/lib/db';
 import { Prisma } from '@/lib/db';
 import { env } from '@/lib/env';
 import { logger } from '@/lib/logger';
-import { nowUtc, zonedDateString, formatInTz } from '@/lib/time';
+import { nowUtc, formatInTz } from '@/lib/time';
+import { trialDaysLeft, trialEndDate } from '@/lib/trial-period';
 import type { NotificationTemplate } from '@prisma/client';
 
 /** 契約済みとみなす Stripe status（この状態のテナントにトライアル通知は送らない）。 */
 const SUBSCRIBED_STATUSES = new Set(['active', 'trialing', 'past_due']);
-
-/** JST 暦日での日数差（end - now）。時刻ではなく暦日で数える。 */
-function daysUntilInJst(target: Date, now: Date): number {
-  const a = Date.parse(`${zonedDateString(target, 'Asia/Tokyo')}T00:00:00Z`);
-  const b = Date.parse(`${zonedDateString(now, 'Asia/Tokyo')}T00:00:00Z`);
-  return Math.round((a - b) / 86_400_000);
-}
 
 /** 商家オーナーのメール宛先を解決。オーナーが居なければ null（送らない）。 */
 async function resolveOwnerRecipient(tenantId: string): Promise<{ email: string; name: string } | null> {
@@ -101,13 +95,17 @@ export async function sweepTrialNotices(now: Date = nowUtc()): Promise<number> {
     // 既に契約済みならトライアル通知は不要（申込直後に催促が飛ぶのを防ぐ）
     if (t.stripeSubscriptionStatus && SUBSCRIBED_STATUSES.has(t.stripeSubscriptionStatus)) continue;
 
-    const d = daysUntilInJst(t.trialEndsAt, now);
+    // 数え方は画面と共通（lib/trial-period）。ここだけ別式にすると、
+    // メールを読んで画面を開いた商家が違う数字を見ることになる。
+    const d = trialDaysLeft(t.trialEndsAt, now);
+    // 「終了しました」は期限日の**翌日**から。d===0 は期限日当日で、
+    // その日いっぱいは管理画面が使える（まだ終わっていないのに終了通知を送らない）。
     const template: NotificationTemplate | null =
-      d === 7 ? 'TRIAL_ENDING_7' : d === 3 ? 'TRIAL_ENDING_3' : d === 1 ? 'TRIAL_ENDING_1' : d <= 0 ? 'TRIAL_ENDED' : null;
+      d === 7 ? 'TRIAL_ENDING_7' : d === 3 ? 'TRIAL_ENDING_3' : d === 1 ? 'TRIAL_ENDING_1' : d < 0 ? 'TRIAL_ENDED' : null;
     if (!template) continue;
 
     // 鍵に終了日を含める: トライアルを延長したら別の用件として再度送れる
-    const key = `trial:${zonedDateString(t.trialEndsAt, 'Asia/Tokyo')}`;
+    const key = `trial:${trialEndDate(t.trialEndsAt)}`;
     if (await enqueueBillingNotice({ tenantId: t.id, template, dedupeKey: key, payload: { trialEndsAt: t.trialEndsAt.toISOString() } })) {
       queued += 1;
     }
@@ -138,7 +136,11 @@ export function buildBillingNotification(input: {
         text: [
           name, '',
           `いつも Yoyaku をご利用いただきありがとうございます。`,
-          `無料トライアルの期限${endLabel ? `（${endLabel}）` : ''}まで残り ${days} 日となりました。`,
+          // 日付だけだと「その日の何時まで？」が分からず、当日の営業終わりに
+          // 手続きしようとして締め出される。「いっぱい」まで書いて曖昧さを消す。
+          endLabel
+            ? `無料トライアルは残り ${days} 日、${endLabel}いっぱいでご利用期限となります。`
+            : `無料トライアルの期限まで残り ${days} 日となりました。`,
           '',
           '期限までにお手続きいただくと、設定やデータはそのまま引き継がれます。',
           `お手続き: ${billingUrl}`,

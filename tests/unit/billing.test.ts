@@ -41,17 +41,38 @@ describe('evaluateBillingAccess', () => {
   });
 
   it('トライアル期間内は許可・残り日数を返す', () => {
+    // NOW = 2026-07-18 09:00 JST。期限は 2026-07-23 21:00 JST。
+    // 残りは JST 暦日で数えて 5（予告メールと同じ数え方）。
+    // 以前は経過時間の切り上げで 6 を返しており、メールと1日ずれていた。
     const g = evaluateBillingAccess(
       { ...base, trialEndsAt: new Date(NOW.getTime() + 5.5 * 86_400_000) },
       { now: NOW, stripeConfigured: true },
     );
-    expect(g).toMatchObject({ allowed: true, state: 'TRIAL', trialDaysLeft: 6 });
+    expect(g).toMatchObject({
+      allowed: true,
+      state: 'TRIAL',
+      trialDaysLeft: 5,
+      trialEndDate: '2026-07-23',
+    });
   });
 
-  it('トライアル期限切れ・未契約はロック', () => {
+  it('期限日はその日いっぱい使える（時刻では締め出さない）', () => {
+    // 期限 = 2026-07-18 08:59:59 JST（NOW の1秒前）。
+    // 時刻で切ると即ロックだが、期限日は 7/18 なのでその日いっぱいは使える。
+    // メール本文が「期限（7月18日）まで」としか書かない以上、
+    // その日の営業終わりに手続きしようとして締め出されるのは約束違反になる。
     expect(
       evaluateBillingAccess(
         { ...base, trialEndsAt: new Date(NOW.getTime() - 1000) },
+        { now: NOW, stripeConfigured: true },
+      ),
+    ).toMatchObject({ allowed: true, state: 'TRIAL', trialDaysLeft: 0, trialEndDate: '2026-07-18' });
+  });
+
+  it('期限日を過ぎたら（翌日以降）ロック', () => {
+    expect(
+      evaluateBillingAccess(
+        { ...base, trialEndsAt: new Date(NOW.getTime() - 86_400_000) },
         { now: NOW, stripeConfigured: true },
       ),
     ).toMatchObject({ allowed: false, state: 'LOCKED' });

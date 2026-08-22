@@ -69,11 +69,20 @@ describe('トライアル終了予告', () => {
     expect(rows[0]!.channel).toBe('EMAIL');
   });
 
-  it('期限切れ後は TRIAL_ENDED', async () => {
+  it('期限日の翌日から TRIAL_ENDED', async () => {
     const { tenantId } = await seedTrialTenant(-1);
     await sweepTrialNotices();
     const rows = await notices(tenantId);
     expect(rows.map((r) => r.template)).toEqual(['TRIAL_ENDED']);
+  });
+
+  it('期限日当日は「終了しました」を送らない（その日いっぱいは使える）', async () => {
+    // 以前は d<=0 で TRIAL_ENDED を送っていたため、JST 0時を回った時点で
+    // 「終了しました・お申し込みが必要です」が届く一方、画面はまだ利用可能で
+    // 残り日数も表示されている、という食い違いが最大24時間続いていた。
+    const { tenantId } = await seedTrialTenant(0);
+    await sweepTrialNotices();
+    expect(await notices(tenantId)).toHaveLength(0);
   });
 
   it('該当しない日（残り5日）には何も積まれない', async () => {

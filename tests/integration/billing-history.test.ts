@@ -578,11 +578,25 @@ describe('同一秒イベントで支払い済みテナントをロックしな�
 });
 
 describe('トライアル残日数の引継ぎ', () => {
-  it('残日数を切り上げで返し、期限切れ・未設定は0', () => {
+  it('期限日の終わりまでを切り上げて返し、期限切れ・未設定は0', () => {
+    // now = 2026-07-01 09:00 JST
     const now = new Date('2026-07-01T00:00:00Z');
-    expect(remainingTrialDays(new Date('2026-07-28T00:00:00Z'), now)).toBe(27);
-    expect(remainingTrialDays(new Date('2026-07-01T12:00:00Z'), now)).toBe(1); // 端数は切り上げ
-    expect(remainingTrialDays(new Date('2026-06-30T00:00:00Z'), now)).toBe(0); // 期限切れ
+    // 期限日 7/28 → 7/29 0時(JST)まで使える → 27日15時間 → 切り上げ 28
+    expect(remainingTrialDays(new Date('2026-07-28T00:00:00Z'), now)).toBe(28);
+    // 期限日が今日（7/1）→ 今日いっぱい残っている → 1
+    expect(remainingTrialDays(new Date('2026-07-01T12:00:00Z'), now)).toBe(1);
+    // 期限日 6/30 → 7/1 0時(JST)に切れており、now はその後 → 0（即時課金）
+    expect(remainingTrialDays(new Date('2026-06-30T00:00:00Z'), now)).toBe(0);
     expect(remainingTrialDays(null, now)).toBe(0);
+  });
+
+  it('期限日の夜に申し込んでも、その日を取り上げない', () => {
+    // 期限日 2026-07-01（JST）。旧実装は trialEndsAt の時刻(21:00 JST)を過ぎると 0 を返し、
+    // 画面が「本日まで利用可」と言っている裏で Stripe に trial_period_days=0＝即時満額請求を渡していた。
+    const trialEndsAt = new Date('2026-07-01T12:00:00Z'); // 7/1 21:00 JST
+    const lateSameDay = new Date('2026-07-01T14:00:00Z'); // 7/1 23:00 JST
+    expect(remainingTrialDays(trialEndsAt, lateSameDay)).toBe(1);
+    // 翌日 0時(JST)を過ぎたら 0
+    expect(remainingTrialDays(trialEndsAt, new Date('2026-07-01T15:00:00Z'))).toBe(0);
   });
 });

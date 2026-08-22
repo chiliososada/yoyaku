@@ -13,6 +13,7 @@ import { env } from '@/lib/env';
 import { logger } from '@/lib/logger';
 import { nowUtc } from '@/lib/time';
 import { Errors } from '@/lib/errors';
+import { isTrialActive, trialDaysLeft, trialEndDate, stripeTrialDays } from '@/lib/trial-period';
 import {
   createBillingPortalSession,
   createCheckoutSession,
@@ -39,8 +40,13 @@ export type BillingState = 'DORMANT' | 'EXEMPT' | 'SUBSCRIBED' | 'TRIAL' | 'CANC
 export interface BillingGate {
   allowed: boolean;
   state: BillingState;
-  /** TRIAL のとき残り日数（切り上げ、最小 0） */
+  /**
+   * TRIAL のとき残り日数（JST 暦日の差、最小 0）。
+   * 期限日当日は 0（その日いっぱいは使える）。メールの「残り N 日」と同じ数え方。
+   */
   trialDaysLeft?: number;
+  /** TRIAL のとき期限日（JST, YYYY-MM-DD）。画面に日付を出して数字の意味を補う。 */
+  trialEndDate?: string;
   /** CANCELED_GRACE のとき、いつまで使えるか（＝支払い済み期間の末日） */
   accessUntil?: Date;
 }
@@ -79,9 +85,16 @@ export function evaluateBillingAccess(
   ) {
     return { allowed: true, state: 'CANCELED_GRACE', accessUntil: tenant.currentPeriodEnd };
   }
-  if (tenant.trialEndsAt && tenant.trialEndsAt.getTime() > opts.now.getTime()) {
-    const daysLeft = Math.max(0, Math.ceil((tenant.trialEndsAt.getTime() - opts.now.getTime()) / 86_400_000));
-    return { allowed: true, state: 'TRIAL', trialDaysLeft: daysLeft };
+  // 期限日（JST暦日）の終わりまで利用できる。時刻で切ると、
+  // メールが示す「期限（8月29日）まで」より前に締め出されることになる。
+  // 数え方は lib/trial-period に一本化（画面とメールで別式にしない）。
+  if (tenant.trialEndsAt && isTrialActive(tenant.trialEndsAt, opts.now)) {
+    return {
+      allowed: true,
+      state: 'TRIAL',
+      trialDaysLeft: Math.max(0, trialDaysLeft(tenant.trialEndsAt, opts.now)),
+      trialEndDate: trialEndDate(tenant.trialEndsAt),
+    };
   }
   return { allowed: false, state: 'LOCKED' };
 }
@@ -121,11 +134,13 @@ export async function ensureStripeCustomer(tenantId: string, email?: string | nu
 /**
  * ローカルトライアルの残日数（切り上げ）。Stripe へ引き継ぐ用。
  * 期限切れ・未設定なら 0（＝即時課金）。純関数（テスト容易性のため now を引数）。
+ *
+ * 画面と同じく「期限日の終わりまで」を残りとみなす。ここだけ時刻で切ると、
+ * 期限日の夜に申し込んだ商家が、画面では「本日まで利用可」と言われていたのに
+ * その場で満額請求されることになる。
  */
 export function remainingTrialDays(trialEndsAt: Date | null, now: Date): number {
-  if (!trialEndsAt) return 0;
-  const ms = trialEndsAt.getTime() - now.getTime();
-  return ms <= 0 ? 0 : Math.ceil(ms / 86_400_000);
+  return stripeTrialDays(trialEndsAt, now);
 }
 
 /** プラン申込の Checkout URL を発行。 */

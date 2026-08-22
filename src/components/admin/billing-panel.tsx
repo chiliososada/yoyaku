@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { formatJpy } from '@/lib/utils';
+import { trialRemainingLabel } from '@/lib/trial-period';
 import { startCheckoutAction, openBillingPortalAction } from '@/server/actions/billing-actions';
 
 interface PlanCard {
@@ -27,6 +28,7 @@ interface PlanCard {
 interface Props {
   state: 'DORMANT' | 'EXEMPT' | 'SUBSCRIBED' | 'TRIAL' | 'CANCELED_GRACE' | 'LOCKED';
   trialDaysLeft?: number;
+  trialEndDate?: string | null;
   /** CANCELED_GRACE のとき、いつまで使えるか（ISO 文字列） */
   accessUntil?: string | null;
   canManage: boolean;
@@ -55,6 +57,16 @@ const STATUS_LABEL: Record<string, string> = {
   past_due: 'お支払い確認中',
   canceled: '解約済み',
 };
+
+/**
+ * JST 暦日（YYYY-MM-DD）の表示。Date を経由しない。
+ * `new Date('2026-08-29')` は UTC 0時と解釈され、閲覧者のブラウザが UTC より西だと
+ * getDate() が 28 を返す。期限日が1日ずれて見えるのは避ける。
+ */
+function fmtJstDate(ymd: string): string {
+  const [y, m, d] = ymd.split('-');
+  return `${Number(y)}年${Number(m)}月${Number(d)}日`;
+}
 
 function fmtDate(iso: string | null): string {
   if (!iso) return '—';
@@ -198,9 +210,11 @@ export function BillingPanel(props: Props) {
           <Sparkles className="mt-0.5 size-5 shrink-0 text-sky-600" />
           <div>
             <p className="font-medium text-sky-900">
-              無料トライアル中（残り {props.trialDaysLeft ?? 0} 日）
+              無料トライアル中（{trialRemainingLabel(props.trialDaysLeft ?? 0)}）
             </p>
             <p className="mt-0.5 text-xs text-sky-800/80">
+              {/* 数字だけだと「いつまで」が分からない。予告メールと同じ日付を併記して突き合わせられるようにする。 */}
+              {props.trialEndDate ? `${fmtJstDate(props.trialEndDate)}の終わりまでご利用いただけます。` : ''}
               期間中にプランへお申し込みいただくと、そのまま継続してご利用いただけます。
             </p>
           </div>
