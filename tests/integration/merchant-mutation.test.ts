@@ -261,6 +261,32 @@ describe('店舗設定 / 特別営業日 / 営業時間', () => {
     expect(ruleAfter.maxConcurrent).toBe(ruleBefore.maxConcurrent);
   });
 
+  it('同時に同じURLを取ろうとしても、成立するのは1店舗だけ', async () => {
+    // 「事前チェック → update」の間に相手が入り込む競合。アプリ側の確認だけでは防げず、
+    // 最後は DB の一意制約(shops_slug_key)が効いているかどうかで決まる。
+    const a = await seedScenario({ staffCount: 1 });
+    const b = await seedScenario({ staffCount: 1 });
+    createdTenants.push(a.tenantId, b.tenantId);
+    const wanted = `race-${Date.now().toString(36)}`;
+
+    const results = await Promise.allSettled([
+      svc.updateShopSettings(a.tenantId, a.shopId, { ...baseSettings(a.shopSlug), slug: wanted }),
+      svc.updateShopSettings(b.tenantId, b.shopId, { ...baseSettings(b.shopSlug), slug: wanted }),
+    ]);
+
+    const won = results.filter((r) => r.status === 'fulfilled');
+    const lost = results.filter((r) => r.status === 'rejected');
+    expect(won).toHaveLength(1);
+    expect(lost).toHaveLength(1);
+    // 負けた側には生の P2002 ではなく、直せる日本語が返る
+    const err = (lost[0] as PromiseRejectedResult).reason as unknown;
+    expect(isAppError(err) && err.code).toBe('CONFLICT');
+    expect(isAppError(err) && err.userMessage).toContain('URL');
+
+    // DB 上でもその URL を持つ店舗はちょうど1件
+    expect(await prisma.shop.count({ where: { slug: wanted } })).toBe(1);
+  });
+
   it('特別営業日の追加(upsert)と削除', async () => {
     const sc = await seedScenario({ staffCount: 1 });
     createdTenants.push(sc.tenantId);
