@@ -124,7 +124,7 @@ export function buildBillingNotification(input: {
   const billingUrl = `${env.APP_BASE_URL}/admin/billing`;
   const name = input.ownerName ? `${input.ownerName} 様` : 'ご担当者様';
   const endLabel = input.trialEndsAt ? formatInTz(new Date(input.trialEndsAt), 'yyyy年M月d日', 'Asia/Tokyo') : null;
-  const sign = ['', '― Yoyaku / マイアークス株式会社'].join('\n');
+  const sign = ['', '― Yoyaku / MyArcs Co., Ltd.'].join('\n');
 
   switch (input.template) {
     case 'TRIAL_ENDING_7':

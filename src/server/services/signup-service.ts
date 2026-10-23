@@ -153,7 +153,7 @@ export async function requestSignup(input: SignupRequestInput, ip: string | null
         'リンクを開いた時点で 30 日間の無料トライアルが始まります（カード登録は不要です）。',
         'お心当たりがない場合は、このメールを破棄してください。アカウントは作成されません。',
         '',
-        '― Yoyaku / マイアークス株式会社',
+        '― Yoyaku / MyArcs Co., Ltd.',
       ].join('\n'),
     });
   } catch (e) {
