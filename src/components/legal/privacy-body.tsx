@@ -66,10 +66,10 @@ export function PrivacyBody() {
       <p>
         マイアークス株式会社　個人情報お問い合わせ窓口
         <br />
-        メール: ryu@arcs-ai.com ／ 電話: 080-4051-5888（平日 10:00〜18:00）
+        メール: info@arcs-ai.com
       </p>
 
-      <p className="!mt-8 text-xs text-slate-400">制定日: 2026年7月19日</p>
+      <p className="!mt-8 text-xs text-slate-400">制定日: 2026年7月19日 ／ 最終改定日: 2026年10月24日</p>
     </>
   );
 }
