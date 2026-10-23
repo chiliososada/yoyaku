@@ -3,7 +3,7 @@ import type { Metadata } from 'next';
 export const metadata: Metadata = { title: '特定商取引法に基づく表記' };
 
 const ROWS: Array<[string, React.ReactNode]> = [
-  ['販売事業者', 'マイアークス株式会社'],
+  ['販売事業者', 'MyArcs Co., Ltd.'],
   ['代表責任者', '劉 子源'],
   ['所在地', '東京都葛飾区（ご請求があった場合、遅滞なく開示いたします。下記メールアドレスまでご請求ください）'],
   ['電話番号', 'ご請求があった場合、遅滞なく開示いたします。下記メールアドレスまでご請求ください'],

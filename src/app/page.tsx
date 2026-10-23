@@ -164,7 +164,7 @@ export default function HomePage() {
             <Link href="/legal/privacy" className="hover:text-foreground hover:underline">プライバシーポリシー</Link>
             <Link href="/legal/tokushoho" className="hover:text-foreground hover:underline">特定商取引法に基づく表記</Link>
           </nav>
-          <span className="text-xs">© {new Date().getFullYear()} マイアークス株式会社</span>
+          <span className="text-xs">© {new Date().getFullYear()} MyArcs Co., Ltd.</span>
         </div>
       </footer>
     </main>

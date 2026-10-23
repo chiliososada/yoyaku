@@ -7,7 +7,7 @@ export function PrivacyBody() {
     <>
       <h1>プライバシーポリシー</h1>
       <p>
-        マイアークス株式会社（以下「当社」）は、予約管理システム「Yoyaku」（https://yoyaku.arcs-ai.com、以下「本サービス」）における個人情報の取扱いについて、以下のとおりプライバシーポリシーを定めます。
+        MyArcs Co., Ltd.（以下「当社」）は、予約管理システム「Yoyaku」（https://yoyaku.arcs-ai.com、以下「本サービス」）における個人情報の取扱いについて、以下のとおりプライバシーポリシーを定めます。
       </p>
 
       <h2>1. 取得する情報</h2>
@@ -64,7 +64,7 @@ export function PrivacyBody() {
 
       <h2>8. お問い合わせ窓口</h2>
       <p>
-        マイアークス株式会社　個人情報お問い合わせ窓口
+        MyArcs Co., Ltd.　個人情報お問い合わせ窓口
         <br />
         メール: info@arcs-ai.com
       </p>
